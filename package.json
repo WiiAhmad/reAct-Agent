@@ -1,0 +1,29 @@
+{
+  "name": "grammy-mcp-openai-claude-agent-bun",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "db:reset": "rm -f data/agent.db data/agent.db-shm data/agent.db-wal && bun src/index.ts --migrate-only",
+    "vendor:tencent-memory": "bun scripts/vendor-tencentdb-agent-memory.ts",
+    "vendor:tencent-memory:force": "bun scripts/vendor-tencentdb-agent-memory.ts --force",
+    "memory:inspect": "bun scripts/inspect-memory.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "@modelcontextprotocol/sdk": "latest",
+    "grammy": "latest",
+    "node-cron": "latest",
+    "openai": "latest",
+    "zod": "latest",
+    "yaml": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node-cron": "latest",
+    "typescript": "latest"
+  }
+}
