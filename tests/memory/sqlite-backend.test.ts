@@ -110,6 +110,17 @@ test("migrate upgrades legacy app memory tables with missing columns", () => {
   const db = new Database(":memory:");
 
   db.exec(`
+    CREATE TABLE autonomous_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_run_at INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE memory_atoms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
@@ -134,6 +145,9 @@ test("migrate upgrades legacy app memory tables with missing columns", () => {
 
   migrate(db);
 
+  const jobColumns = new Set(
+    (db.query(`PRAGMA table_info(autonomous_jobs)`).all() as Array<{ name: string }>).map((row) => row.name),
+  );
   const atomColumns = new Set(
     (db.query(`PRAGMA table_info(memory_atoms)`).all() as Array<{ name: string }>).map((row) => row.name),
   );
@@ -141,6 +155,12 @@ test("migrate upgrades legacy app memory tables with missing columns", () => {
     (db.query(`PRAGMA table_info(memory_scenarios)`).all() as Array<{ name: string }>).map((row) => row.name),
   );
 
+  expect(jobColumns.has("schedule_mode")).toBe(true);
+  expect(jobColumns.has("interval_sec")).toBe(true);
+  expect(jobColumns.has("cron_expr")).toBe(true);
+  expect(jobColumns.has("last_finished_at")).toBe(true);
+  expect(jobColumns.has("last_status")).toBe(true);
+  expect(jobColumns.has("last_error")).toBe(true);
   expect(atomColumns.has("source_layer")).toBe(true);
   expect(scenarioColumns.has("file_path")).toBe(true);
 });
@@ -164,4 +184,20 @@ test("app schema keeps transitional legacy memory tables available", () => {
   expect(tableNames.has("memory_offload_refs")).toBe(true);
   expect(tableNames.has("memory_task_nodes")).toBe(true);
   expect(tableNames.has("memory_run_log")).toBe(true);
+  expect(tableNames.has("memory_update_settings")).toBe(true);
+
+  const updateSettingsColumns = (db.query(`PRAGMA table_info(memory_update_settings)`).all() as Array<{ name: string }>).map((row) => row.name);
+  expect(updateSettingsColumns).toEqual([
+    "user_id",
+    "enabled",
+    "schedule_mode",
+    "interval_sec",
+    "cron_expr",
+    "last_run_at",
+    "last_finished_at",
+    "last_status",
+    "last_error",
+    "created_at",
+    "updated_at",
+  ]);
 });

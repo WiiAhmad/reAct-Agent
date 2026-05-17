@@ -38,7 +38,7 @@ Typical menu sections:
 
 ### `/help`
 
-Explains the simplified public surface and points users to the menu-driven flows.
+Explains the simplified public surface and how to use the button-driven menu flows.
 
 ## Memory Update
 

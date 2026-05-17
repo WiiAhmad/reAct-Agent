@@ -1,0 +1,100 @@
+import type { BotConversation } from "../context";
+import type { Context } from "grammy";
+import { buildSchedulePresetKeyboard, uiCallbacks } from "../ui/keyboards";
+import { validateCronExpression } from "../../services/schedules";
+import type { AutonomousJobService } from "../../services/autonomous-jobs";
+
+export type JobCreateConversationDeps = {
+  autonomousJobs: AutonomousJobService;
+};
+
+function resolveChatId(ctx: Context) {
+  return String(ctx.chat?.id ?? "unknown");
+}
+
+function resolveUserId(ctx: Context) {
+  return String(ctx.from?.id ?? ctx.chat?.id ?? "unknown");
+}
+
+async function chooseSchedule(conversation: BotConversation, ctx: Context) {
+  while (true) {
+    await ctx.reply("Pilih jadwal untuk autonomous job:", {
+      reply_markup: buildSchedulePresetKeyboard(),
+    });
+
+    const choice = await conversation.waitFor("callback_query:data");
+    await choice.answerCallbackQuery();
+
+    switch (choice.callbackQuery.data) {
+      case uiCallbacks.schedulePreset10m:
+        return { scheduleMode: "interval" as const, intervalSec: 600 };
+      case uiCallbacks.schedulePreset30m:
+        return { scheduleMode: "interval" as const, intervalSec: 1800 };
+      case uiCallbacks.schedulePreset1h:
+        return { scheduleMode: "interval" as const, intervalSec: 3600 };
+      case uiCallbacks.schedulePreset6h:
+        return { scheduleMode: "interval" as const, intervalSec: 21600 };
+      case uiCallbacks.schedulePreset12h:
+        return { scheduleMode: "interval" as const, intervalSec: 43200 };
+      case uiCallbacks.schedulePreset24h:
+        return { scheduleMode: "interval" as const, intervalSec: 86400 };
+      case uiCallbacks.customCron: {
+        while (true) {
+          await ctx.reply("Kirim cron expression untuk autonomous job.");
+          const cronCtx = await conversation.waitFor("message:text");
+          const cronExpr = cronCtx.message.text.trim();
+          if (!cronExpr) {
+            await cronCtx.reply("Cron expression tidak boleh kosong.");
+            continue;
+          }
+
+          try {
+            return { scheduleMode: "cron" as const, cronExpr: validateCronExpression(cronExpr) };
+          } catch (error) {
+            await cronCtx.reply(error instanceof Error ? error.message : String(error));
+          }
+        }
+      }
+      case uiCallbacks.cancel:
+        return null;
+      default:
+        await choice.reply("Pilih preset atau custom cron.");
+        break;
+    }
+  }
+}
+
+export function createJobCreateConversation(deps: JobCreateConversationDeps) {
+  return async function jobCreateConversation(conversation: BotConversation, ctx: Context) {
+    const chatId = resolveChatId(ctx);
+    const userId = resolveUserId(ctx);
+
+    await ctx.reply("Kirim prompt untuk autonomous job baru.");
+    let prompt = "";
+
+    while (!prompt) {
+      const promptCtx = await conversation.waitFor("message:text");
+      prompt = promptCtx.message.text.trim();
+      if (!prompt) {
+        await promptCtx.reply("Prompt tidak boleh kosong.");
+      }
+    }
+
+    const schedule = await chooseSchedule(conversation, ctx);
+    if (!schedule) {
+      await ctx.reply("Pembuatan autonomous job dibatalkan.");
+      return;
+    }
+
+    const job = await conversation.external(() =>
+      deps.autonomousJobs.createJob({
+        chatId,
+        userId,
+        prompt,
+        schedule,
+      }),
+    );
+
+    await ctx.reply(`Autonomous job dibuat: #${job.id}\nSchedule: ${job.scheduleLabel}`);
+  };
+}

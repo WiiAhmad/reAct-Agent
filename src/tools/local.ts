@@ -1,7 +1,8 @@
 import type { Api } from "grammy";
 import type { MemoryServiceLike as MemoryService } from "../memory/core/service";
-import type { RegisteredTool, ToolContext } from "./types";
+import { currentDateTimeSnapshot } from "../utils/time";
 import { truncateText } from "../utils/text";
+import type { RegisteredTool, ToolContext } from "./types";
 
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -118,6 +119,19 @@ export function createLocalTools(memory: MemoryService, telegram?: Api): Registe
           sourceLayer: "L1",
         });
         return id > 0 ? `Saved L1 memory atom #${id}.` : "Memory was empty or duplicate.";
+      },
+    },
+    {
+      name: "tdai_current_datetime",
+      source: "local",
+      description: "Return the current date and time snapshot for Telegram replies and timestamp-sensitive tool use.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      async execute() {
+        return JSON.stringify(currentDateTimeSnapshot());
       },
     },
     {
