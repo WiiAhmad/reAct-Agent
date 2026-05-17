@@ -482,6 +482,56 @@ test("migrateSqliteMemory replaces stale canonical_text unique index predicate",
   expect(normalizedIndexSql).not.toContain("canonical_text != ''");
 });
 
+test("migrateSqliteMemory drops stale canonical_text unique index before duplicate backfill", () => {
+  const db = new Database(":memory:");
+
+  db.exec(`
+    CREATE TABLE memory_atoms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      canonical_text TEXT,
+      importance INTEGER NOT NULL DEFAULT 3,
+      source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_layer TEXT NOT NULL DEFAULT 'L1',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, text)
+    );
+
+    CREATE UNIQUE INDEX memory_atoms_user_canonical_text_idx
+    ON memory_atoms (user_id, canonical_text)
+    WHERE canonical_text IS NOT NULL AND canonical_text != '';
+
+    INSERT INTO memory_atoms (id, user_id, text, canonical_text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+    VALUES
+      (1, 'u1', 'User''s name is Wii.', NULL, 2, '[7]', 'L1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+      (2, 'u1', 'User’s name is Wii.', NULL, 5, '[8]', 'L1', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+  `);
+
+  expect(() => migrateSqliteMemory(db)).not.toThrow();
+
+  const atoms = db.query(`SELECT id, canonical_text, importance, source_turn_ids_json FROM memory_atoms ORDER BY id ASC`).all() as Array<{
+    id: number;
+    canonical_text: string | null;
+    importance: number;
+    source_turn_ids_json: string;
+  }>;
+  const index = db.query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'memory_atoms_user_canonical_text_idx'`).get() as { sql: string } | null;
+  const normalizedIndexSql = index?.sql.replace(/\s+/g, " ").trim();
+
+  expect(atoms).toEqual([
+    {
+      id: 1,
+      canonical_text: "user s name is wii",
+      importance: 5,
+      source_turn_ids_json: JSON.stringify([7, 8]),
+    },
+  ]);
+  expect(normalizedIndexSql).toContain("WHERE canonical_text IS NOT NULL");
+  expect(normalizedIndexSql).not.toContain("canonical_text != ''");
+});
+
 test("SQLite backend uses compacted canonical duplicate survivor after migration", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 
