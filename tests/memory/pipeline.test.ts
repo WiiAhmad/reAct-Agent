@@ -198,3 +198,62 @@ test("runL1Pipeline counts duplicate L1 outputs as updates instead of new atoms"
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("pipeline collapses canonical atom variants before building the L2 scenario", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-pipeline-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+    const logs = new InteractionLogService(backend, {
+      enabled: false,
+      exportDir: join(tempDir, "jsonl"),
+    });
+    const duplicateVariantLlm: LlmProvider = {
+      async complete({ messages }) {
+        const system = String(messages[0]?.content ?? "");
+        if (system.includes("L1 extractor")) {
+          return {
+            content: JSON.stringify([
+              { text: "User's name is Wii.", importance: 4, source_turn_ids: [1] },
+              { text: "User’s name is Wii.", importance: 5, source_turn_ids: [1] },
+            ]),
+            toolCalls: [],
+          };
+        }
+        if (system.includes("L2 Scenario aggregator")) {
+          const atomDigest = String(messages[1]?.content ?? "");
+          return {
+            content: `## Identity\n${atomDigest.split("\n").filter(Boolean).map((line) => `- ${line}`).join("\n")}`,
+            toolCalls: [],
+          };
+        }
+        return {
+          content: "- scenario_id=1 Identity\n- atom_id=1 User’s name is Wii.",
+          toolCalls: [],
+        };
+      },
+    };
+    const pipeline = new PipelineCoordinator(backend, duplicateVariantLlm);
+
+    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "My name is Wii.", mode: "chat" });
+    const result = await pipeline.runMaintenanceForUser("u1", true);
+
+    const atoms = await backend.listMemoryAtoms("u1", 10);
+    const scenario = db
+      .query(`SELECT body_markdown, atom_ids_json FROM memory_scenarios WHERE user_id = ? ORDER BY id DESC LIMIT 1`)
+      .get("u1") as { body_markdown: string; atom_ids_json: string } | null;
+
+    expect(result.l1Created).toBe(1);
+    expect(atoms).toHaveLength(1);
+    expect(JSON.parse(scenario?.atom_ids_json ?? "[]")).toEqual([1]);
+    expect((scenario?.body_markdown.match(/atom_id=/g) ?? [])).toHaveLength(1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
