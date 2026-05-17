@@ -28,8 +28,23 @@ test("tool surface stays stable while calling MemoryService", async () => {
     "tdai_context_ref_read",
     "tdai_memory_status",
     "save_memory",
+    "tdai_current_datetime",
     "telegram_send_message",
   ]);
+
+  const datetimeTool = tools.find((tool) => tool.name === "tdai_current_datetime");
+  expect(datetimeTool).toBeDefined();
+
+  const datetime = await datetimeTool!.execute({}, { chatId: "c1", userId: "u1", memory: memory as any });
+  const parsed = JSON.parse(datetime);
+
+  expect(parsed).toMatchObject({
+    iso_timestamp: expect.any(String),
+    unix_timestamp: expect.any(Number),
+    readable_local_datetime: expect.any(String),
+    timezone: expect.any(String),
+    offset_minutes: expect.any(Number),
+  });
 
   const saveMemory = tools.find((tool) => tool.name === "save_memory");
   expect(saveMemory).toBeDefined();

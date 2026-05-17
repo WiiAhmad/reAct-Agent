@@ -4,6 +4,7 @@ import type { EventMeta } from "../memory/core/types";
 import { truncateText } from "../utils/text";
 import type { ToolRegistry } from "../tools/registry";
 import type { AgentMessage, LlmProvider, ToolCall } from "./types";
+import { buildAgentSystemPrompt } from "./prompts/system";
 
 export type RunAgentInput = {
   chatId: string;
@@ -90,29 +91,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     },
   });
 
-  const system = `You are a Telegram AI agent running on grammY with built-in local tools and a project-owned local memory backend.
-
-Use a ReAct-style loop internally:
-1. Understand the user goal.
-2. Recall memory first, especially L3 Persona and L2 Scenarios.
-3. Decide whether a tool is needed.
-4. Call tools when useful.
-5. Observe tool results. If a result was offloaded, use tdai_context_ref_read only when raw details are needed.
-6. Answer clearly in the user's language.
-
-Memory layers:
-- L0 Conversation: raw JSONL + SQLite history.
-- L1 Atom: durable facts/preferences/workflow facts.
-- L2 Scenario: grouped scene markdown with source atom references.
-- L3 Persona: stable profile injected before turns.
-- Short-term context offload: heavy tool results go to refs/*.md and a Mermaid task canvas with node_id/result_ref.
-
-Rules:
-- Do not reveal hidden chain-of-thought. Give concise reasoning summaries only when useful.
-- Prefer tools for fresh/private/actionable data.
-- Use save_memory only for durable preferences, stable project context, or reusable workflow facts.
-- If a tool fails, recover or explain the limitation.
-- For Telegram, keep the final answer practical and not too long.`;
+  const system = buildAgentSystemPrompt();
 
   const memoryContext = `Relevant layered memory snapshot:\n\n${formatRecall(recall)}`;
 

@@ -5,7 +5,11 @@ import { createMemoryService } from "./memory/integration/factory";
 import { ToolRegistry } from "./tools/registry";
 import { createLocalTools } from "./tools/local";
 import { createTelegramBot } from "./bot/bot";
-import { startAutonomousLoop, startMemoryMaintenanceLoop } from "./cron/autonomous";
+import { runOneAutonomousJob, runOneMemoryUpdateNow } from "./cron/autonomous";
+import { startSchedulerLoop } from "./cron/scheduler";
+import { AutonomousJobService } from "./services/autonomous-jobs";
+import { MemoryUpdateSettingsService } from "./services/memory-update-settings";
+import { unixNow } from "./utils/time";
 
 async function main() {
   initDb();
@@ -36,13 +40,37 @@ async function main() {
     },
   });
   const registry = new ToolRegistry(db);
+  const autonomousJobs = new AutonomousJobService(db);
+  const memoryUpdateSettings = new MemoryUpdateSettingsService(db);
 
-  const bot = createTelegramBot({ db, memory, registry, llm });
+  const bot = createTelegramBot({ memory, registry, llm, autonomousJobs, memoryUpdateSettings });
 
   registry.registerMany(createLocalTools(memory, bot.api));
 
-  startAutonomousLoop({ db, bot, memory, registry, llm });
-  startMemoryMaintenanceLoop({ db, memory, llm });
+  startSchedulerLoop({
+    tickCron: config.scheduler.tickCron,
+    maxItemsPerTick: config.scheduler.maxItemsPerTick,
+    jobs: autonomousJobs,
+    memoryUpdateSettings,
+    nowUnixFn: unixNow,
+    runOneAutonomousJob: ({ job, nowUnix }) =>
+      runOneAutonomousJob({
+        db,
+        bot,
+        memory,
+        registry,
+        llm,
+        job,
+        nowUnix,
+      }),
+    runOneMemoryUpdateNow: ({ userId, nowUnix }) =>
+      runOneMemoryUpdateNow({
+        memory,
+        settings: memoryUpdateSettings,
+        userId,
+        nowUnix,
+      }),
+  });
 
   const stop = async () => {
     console.log("Shutting down...");

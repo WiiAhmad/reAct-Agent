@@ -14,6 +14,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
     "@grammyjs/conversations": "^2.1.1",
+    "cron-parser": "^5.5.0",
     "grammy": "latest",
     "node-cron": "latest",
     "openai": "latest",

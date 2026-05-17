@@ -5,23 +5,145 @@ import { config } from "../config";
 import type { LlmProvider } from "../agent/types";
 import { runReactAgent } from "../agent/react-agent";
 import type { MemoryService } from "../memory/core/service";
+import { AutonomousJobService, type AutonomousJobRow } from "../services/autonomous-jobs";
+import { MemoryUpdateSettingsService } from "../services/memory-update-settings";
+import { describeSchedule, normalizeSchedule } from "../services/schedules";
+import type { BotContext } from "../bot/context";
 import type { ToolRegistry } from "../tools/registry";
 import { splitTelegramMessage, truncateText } from "../utils/text";
 import { unixNow } from "../utils/time";
 
 export type AutonomousDeps = {
   db: Database;
-  bot: Bot;
+  bot: Bot<BotContext>;
   memory: MemoryService;
   registry: ToolRegistry;
   llm: LlmProvider;
 };
 
+export type AutonomousRunInput = AutonomousDeps & {
+  job: AutonomousJobRow;
+  nowUnix?: number;
+  finishedUnix?: number;
+  runAgent?: typeof runReactAgent;
+};
+
+export type MemoryUpdateRunNowInput = {
+  memory: MemoryService;
+  settings: MemoryUpdateSettingsService;
+  userId: string;
+  nowUnix?: number;
+  finishedUnix?: number;
+};
+
 let autonomousBusy = false;
 let memoryBusy = false;
 
+type AutonomousJobDbRow = {
+  id: number;
+  chat_id: string;
+  user_id: string;
+  prompt: string;
+  enabled: number;
+  schedule_mode: "interval" | "cron";
+  interval_sec: number | null;
+  cron_expr: string | null;
+  last_run_at: number | null;
+  last_finished_at: number | null;
+  last_status: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 function logCronEvent(event: string, details: Record<string, unknown>) {
   console.log(`[cron:${event}]`, details);
+}
+
+function toErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function mapAutonomousJobRow(row: AutonomousJobDbRow): AutonomousJobRow {
+  const schedule = normalizeSchedule({
+    scheduleMode: row.schedule_mode,
+    intervalSec: row.interval_sec,
+    cronExpr: row.cron_expr,
+    lastFinishedAt: row.last_finished_at,
+  });
+
+  return {
+    id: row.id,
+    chatId: row.chat_id,
+    userId: row.user_id,
+    prompt: row.prompt,
+    enabled: row.enabled === 1,
+    scheduleMode: schedule.scheduleMode,
+    intervalSec: schedule.intervalSec,
+    cronExpr: schedule.cronExpr,
+    lastRunAt: row.last_run_at,
+    lastFinishedAt: row.last_finished_at,
+    lastStatus: row.last_status,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    scheduleLabel: describeSchedule(schedule),
+  };
+}
+
+export async function runOneAutonomousJob(input: AutonomousRunInput) {
+  const now = input.nowUnix ?? unixNow();
+  const finishedAt = input.finishedUnix ?? unixNow();
+  const jobService = new AutonomousJobService(input.db);
+  jobService.markRunStarted(input.job.id, now);
+
+  try {
+    const answer = await (input.runAgent ?? runReactAgent)({
+      chatId: input.job.chatId,
+      userId: input.job.userId,
+      input: `[AUTONOMOUS_JOB #${input.job.id}] ${input.job.prompt}`,
+      memory: input.memory,
+      registry: input.registry,
+      llm: input.llm,
+      mode: "autonomous",
+    });
+
+    const finished = jobService.markRunFinished(input.job.id, finishedAt, "success", null);
+    const text = `🤖 Autonomous job #${input.job.id}\n\n${truncateText(answer, 3500)}`;
+    for (const chunk of splitTelegramMessage(text)) {
+      await input.bot.api.sendMessage(input.job.chatId, chunk).catch((error) => {
+        console.error(`Failed to send autonomous job #${input.job.id}`, error);
+      });
+    }
+
+    return { job: finished, answer };
+  } catch (error) {
+    const message = toErrorMessage(error);
+    jobService.markRunFinished(input.job.id, finishedAt, "error", message);
+    const failureText = `🤖 Autonomous job #${input.job.id} failed\n\n${truncateText(message, 3500)}`;
+    for (const chunk of splitTelegramMessage(failureText)) {
+      await input.bot.api.sendMessage(input.job.chatId, chunk).catch((sendError) => {
+        console.error(`Failed to send autonomous job failure #${input.job.id}`, sendError);
+      });
+    }
+    throw error;
+  }
+}
+
+export async function runOneMemoryUpdateNow(input: MemoryUpdateRunNowInput) {
+  const now = input.nowUnix ?? unixNow();
+  const finishedAt = input.finishedUnix ?? unixNow();
+  input.settings.markRunStarted(input.userId, now);
+
+  try {
+    const maintenanceResult = await input.memory.runMaintenanceForUser(input.userId, true);
+    const finished = input.settings.markRunFinished(input.userId, finishedAt, "success", null);
+    return { settings: finished, maintenanceResult };
+  } catch (error) {
+    const message = toErrorMessage(error);
+    input.settings.markRunFinished(input.userId, finishedAt, "error", message);
+    throw error;
+  }
 }
 
 export function startAutonomousLoop(deps: AutonomousDeps) {
@@ -35,26 +157,28 @@ export function startAutonomousLoop(deps: AutonomousDeps) {
       const now = unixNow();
       const jobs = deps.db
         .query(`
-          SELECT id, chat_id, user_id, prompt, last_run_at
+          SELECT id, chat_id, user_id, prompt, enabled, schedule_mode, interval_sec, cron_expr, last_run_at, last_finished_at, last_status, last_error, created_at, updated_at
           FROM autonomous_jobs
           WHERE enabled = 1
           ORDER BY id ASC
           LIMIT ?
         `)
-        .all(config.autonomous.maxJobsPerTick) as Array<{ id: number; chat_id: string; user_id: string; prompt: string; last_run_at: number | null }>;
+        .all(config.autonomous.maxJobsPerTick) as AutonomousJobDbRow[];
+
+      const mappedJobs = jobs.map(mapAutonomousJobRow);
 
       logCronEvent("autonomous-tick", {
         cron: config.autonomous.cron,
-        jobCount: jobs.length,
+        jobCount: mappedJobs.length,
         maxJobsPerTick: config.autonomous.maxJobsPerTick,
       });
 
-      for (const job of jobs) {
-        if (job.last_run_at && now - job.last_run_at < config.autonomous.minIntervalSec) {
+      for (const job of mappedJobs) {
+        if (job.lastRunAt && now - job.lastRunAt < config.autonomous.minIntervalSec) {
           logCronEvent("autonomous-job-skip", {
             jobId: job.id,
-            chatId: job.chat_id,
-            userId: job.user_id,
+            chatId: job.chatId,
+            userId: job.userId,
             reason: "min_interval",
           });
           continue;
@@ -62,34 +186,24 @@ export function startAutonomousLoop(deps: AutonomousDeps) {
 
         logCronEvent("autonomous-job-start", {
           jobId: job.id,
-          chatId: job.chat_id,
-          userId: job.user_id,
+          chatId: job.chatId,
+          userId: job.userId,
           prompt: truncateText(job.prompt, 160),
         });
 
-        deps.db.query(`UPDATE autonomous_jobs SET last_run_at = ?, updated_at = ? WHERE id = ?`).run(now, new Date().toISOString(), job.id);
-
-        const answer = await runReactAgent({
-          chatId: job.chat_id,
-          userId: job.user_id,
-          input: `[AUTONOMOUS_JOB #${job.id}] ${job.prompt}`,
-          memory: deps.memory,
-          registry: deps.registry,
-          llm: deps.llm,
-          mode: "autonomous",
-        }).catch((error) => `Autonomous job #${job.id} failed: ${error instanceof Error ? error.message : String(error)}`);
-
-        logCronEvent("autonomous-job-complete", {
-          jobId: job.id,
-          chatId: job.chat_id,
-          answerLength: answer.length,
-          answerPreview: truncateText(answer, 200),
-        });
-
-        const text = `🤖 Autonomous job #${job.id}\n\n${truncateText(answer, 3500)}`;
-        for (const chunk of splitTelegramMessage(text)) {
-          await deps.bot.api.sendMessage(job.chat_id, chunk).catch((error) => {
-            console.error(`Failed to send autonomous job #${job.id}`, error);
+        try {
+          const result = await runOneAutonomousJob({ ...deps, job, nowUnix: now });
+          logCronEvent("autonomous-job-complete", {
+            jobId: job.id,
+            chatId: job.chatId,
+            answerLength: result.answer.length,
+            answerPreview: truncateText(result.answer, 200),
+          });
+        } catch (error) {
+          logCronEvent("autonomous-job-error", {
+            jobId: job.id,
+            chatId: job.chatId,
+            error: toErrorMessage(error),
           });
         }
       }

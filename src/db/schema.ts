@@ -44,8 +44,28 @@ export function migrate(db: Database) {
       chat_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       prompt TEXT NOT NULL,
+      schedule_mode TEXT NOT NULL DEFAULT 'interval',
+      interval_sec INTEGER,
+      cron_expr TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       last_run_at INTEGER,
+      last_finished_at INTEGER,
+      last_status TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_update_settings (
+      user_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      schedule_mode TEXT NOT NULL DEFAULT 'interval',
+      interval_sec INTEGER,
+      cron_expr TEXT,
+      last_run_at INTEGER,
+      last_finished_at INTEGER,
+      last_status TEXT,
+      last_error TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -140,5 +160,24 @@ export function migrate(db: Database) {
 
   if (!hasColumn(db, "memory_scenarios", "file_path")) {
     db.exec(`ALTER TABLE memory_scenarios ADD COLUMN file_path TEXT`);
+  }
+
+  if (!hasColumn(db, "autonomous_jobs", "schedule_mode")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'interval'`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "interval_sec")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN interval_sec INTEGER`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "cron_expr")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN cron_expr TEXT`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "last_finished_at")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN last_finished_at INTEGER`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "last_status")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN last_status TEXT`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "last_error")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN last_error TEXT`);
   }
 }

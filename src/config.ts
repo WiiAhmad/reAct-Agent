@@ -83,6 +83,10 @@ export function parseConfig(source: ConfigSource) {
       minIntervalSec: intEnv(source, "AUTONOMOUS_MIN_INTERVAL_SEC", 600),
       maxJobsPerTick: intEnv(source, "AUTONOMOUS_MAX_JOBS_PER_TICK", 20),
     },
+    scheduler: {
+      tickCron: env(source, "SCHEDULER_TICK_CRON", "* * * * *"),
+      maxItemsPerTick: intEnv(source, "SCHEDULER_MAX_ITEMS_PER_TICK", 20),
+    },
   };
 }
 
@@ -137,6 +141,10 @@ export function getRuntimeConfigSummary() {
     autonomous: {
       cron: config.autonomous.cron,
       minIntervalSec: config.autonomous.minIntervalSec,
+    },
+    scheduler: {
+      tickCron: config.scheduler.tickCron,
+      maxItemsPerTick: config.scheduler.maxItemsPerTick,
     },
     memory: {
       maintenanceCron: config.memory.maintenanceCron,

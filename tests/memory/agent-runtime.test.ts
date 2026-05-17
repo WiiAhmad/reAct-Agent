@@ -57,6 +57,7 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
 
     expect(answer).toContain("Done.");
     expect(seenMessages.filter((message) => message.role === "user" && message.content === "remember that we use Bun")).toHaveLength(1);
+    expect(registry.list().map((tool) => tool.name)).toContain("tdai_current_datetime");
     const events = await memory.listInteractionEvents("u1", "c1", 10);
     expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["user_message", "assistant_message"]));
 

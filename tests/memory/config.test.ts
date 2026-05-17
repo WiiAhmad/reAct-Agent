@@ -33,3 +33,25 @@ test("parseConfig can enable JSONL export explicitly", () => {
 
   expect(runtime.memory.jsonlExportEnabled).toBe(true);
 });
+
+test("parseConfig exposes scheduler defaults and overrides", () => {
+  const defaults = parseConfig({
+    BOT_TOKEN: "123:abc",
+    LLM_PROVIDER: "openai",
+    OPENAI_API_KEY: "sk-test",
+  });
+
+  expect(defaults.scheduler.tickCron).toBe("* * * * *");
+  expect(defaults.scheduler.maxItemsPerTick).toBe(20);
+
+  const overridden = parseConfig({
+    BOT_TOKEN: "123:abc",
+    LLM_PROVIDER: "openai",
+    OPENAI_API_KEY: "sk-test",
+    SCHEDULER_TICK_CRON: "*/5 * * * *",
+    SCHEDULER_MAX_ITEMS_PER_TICK: "7",
+  });
+
+  expect(overridden.scheduler.tickCron).toBe("*/5 * * * *");
+  expect(overridden.scheduler.maxItemsPerTick).toBe(7);
+});
