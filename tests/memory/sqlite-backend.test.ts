@@ -451,6 +451,37 @@ test("migrateSqliteMemory compacts empty canonical_text duplicates and indexes n
   expect(normalizedIndexSql).not.toContain("canonical_text != ''");
 });
 
+test("migrateSqliteMemory replaces stale canonical_text unique index predicate", () => {
+  const db = new Database(":memory:");
+
+  db.exec(`
+    CREATE TABLE memory_atoms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      canonical_text TEXT,
+      importance INTEGER NOT NULL DEFAULT 3,
+      source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_layer TEXT NOT NULL DEFAULT 'L1',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, text)
+    );
+
+    CREATE UNIQUE INDEX memory_atoms_user_canonical_text_idx
+    ON memory_atoms (user_id, canonical_text)
+    WHERE canonical_text IS NOT NULL AND canonical_text != '';
+  `);
+
+  migrateSqliteMemory(db);
+
+  const index = db.query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'memory_atoms_user_canonical_text_idx'`).get() as { sql: string } | null;
+  const normalizedIndexSql = index?.sql.replace(/\s+/g, " ").trim();
+
+  expect(normalizedIndexSql).toContain("WHERE canonical_text IS NOT NULL");
+  expect(normalizedIndexSql).not.toContain("canonical_text != ''");
+});
+
 test("SQLite backend uses compacted canonical duplicate survivor after migration", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 

@@ -81,6 +81,10 @@ function backfillCanonicalText(db: Database): void {
   }
 }
 
+function normalizeSql(sql: string): string {
+  return sql.replace(/\s+/g, " ").trim();
+}
+
 function compactCanonicalAtomDuplicates(db: Database): void {
   const rows = db
     .query(`
@@ -294,6 +298,19 @@ export function migrateSqliteMemory(db: Database) {
 
   backfillCanonicalText(db);
   compactCanonicalAtomDuplicates(db);
+
+  const desiredCanonicalTextIndexSql = `
+    CREATE UNIQUE INDEX memory_atoms_user_canonical_text_idx
+    ON memory_atoms (user_id, canonical_text)
+    WHERE canonical_text IS NOT NULL
+  `;
+  const existingCanonicalTextIndex = db
+    .query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
+    .get("memory_atoms_user_canonical_text_idx") as { sql: string } | null;
+
+  if (existingCanonicalTextIndex && normalizeSql(existingCanonicalTextIndex.sql) !== normalizeSql(desiredCanonicalTextIndexSql)) {
+    db.exec(`DROP INDEX memory_atoms_user_canonical_text_idx`);
+  }
 
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS memory_atoms_user_canonical_text_idx
