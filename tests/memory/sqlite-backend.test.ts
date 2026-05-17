@@ -177,7 +177,107 @@ test("migrate backfills canonical text for exact legacy memory atom upserts", as
   }
 });
 
-test("SQLite backend prefers exact raw text when legacy canonical duplicates exist", async () => {
+test("migrateSqliteMemory backfills canonical_text and compacts exact duplicate atoms", async () => {
+  const db = new Database(":memory:");
+
+  db.exec(`
+    CREATE TABLE memory_atoms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      importance INTEGER NOT NULL DEFAULT 3,
+      source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_layer TEXT NOT NULL DEFAULT 'L1',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, text)
+    );
+
+    CREATE VIRTUAL TABLE memory_atoms_fts USING fts5(
+      text,
+      atom_id UNINDEXED,
+      user_id UNINDEXED,
+      tokenize = 'unicode61'
+    );
+
+    CREATE TABLE memory_atom_embeddings (
+      atom_id INTEGER PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      embedding_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE lineage_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      link_type TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, source_kind, source_id, target_kind, target_id, link_type)
+    );
+
+    CREATE TABLE memory_scenarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body_markdown TEXT NOT NULL,
+      atom_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  db.query(`INSERT INTO memory_atoms (user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run("u1", "User's name is Wii.", 2, JSON.stringify([1]), "L1", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+  db.query(`INSERT INTO memory_atoms (user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run("u1", "User’s name is Wii.", 5, JSON.stringify([2]), "L1", "2026-01-02T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+
+  db.query(`INSERT INTO memory_atoms_fts (text, atom_id, user_id) VALUES (?, ?, ?)`)
+    .run("User's name is Wii.", "1", "u1");
+  db.query(`INSERT INTO memory_atoms_fts (text, atom_id, user_id) VALUES (?, ?, ?)`)
+    .run("User’s name is Wii.", "2", "u1");
+  db.query(`INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at) VALUES (?, ?, ?, ?)`)
+    .run(1, "u1", "[1,0,0]", "2026-01-01T00:00:00.000Z");
+  db.query(`INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at) VALUES (?, ?, ?, ?)`)
+    .run(2, "u1", "[0,1,0]", "2026-01-02T00:00:00.000Z");
+
+  db.query(`INSERT INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run("u1", "conversation", "7", "memory_atom", "1", "evidence", "2026-01-01T00:00:00.000Z");
+  db.query(`INSERT INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run("u1", "conversation", "7", "memory_atom", "2", "evidence", "2026-01-01T00:00:00.000Z");
+  db.query(`INSERT INTO memory_scenarios (user_id, title, body_markdown, atom_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run("u1", "Identity", "- atom_id=1 User's name is Wii.\n- atom_id=2 User’s name is Wii.", JSON.stringify([1, 2]), "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+
+  migrateSqliteMemory(db);
+
+  const atoms = db.query(`SELECT id, text, importance, source_turn_ids_json, canonical_text FROM memory_atoms ORDER BY id ASC`).all() as Array<{
+    id: number;
+    text: string;
+    importance: number;
+    source_turn_ids_json: string;
+    canonical_text: string;
+  }>;
+  const scenario = db.query(`SELECT atom_ids_json FROM memory_scenarios WHERE user_id = ?`).get("u1") as { atom_ids_json: string } | null;
+  const lineageCount = db.query(`SELECT COUNT(*) AS count FROM lineage_links WHERE user_id = ? AND target_kind = 'memory_atom' AND target_id = '1'`).get("u1") as { count: number };
+  const duplicateLineageCount = db.query(`SELECT COUNT(*) AS count FROM lineage_links WHERE user_id = ? AND target_kind = 'memory_atom' AND target_id = '2'`).get("u1") as { count: number };
+
+  expect(atoms).toEqual([
+    expect.objectContaining({
+      id: 1,
+      importance: 5,
+      source_turn_ids_json: JSON.stringify([1, 2]),
+    }),
+  ]);
+  expect(atoms[0]?.canonical_text).toBeString();
+  expect(JSON.parse(scenario?.atom_ids_json ?? "[]")).toEqual([1]);
+  expect(lineageCount.count).toBe(1);
+  expect(duplicateLineageCount.count).toBe(0);
+});
+
+test("SQLite backend uses compacted canonical duplicate survivor after migration", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 
   try {
@@ -231,14 +331,18 @@ test("SQLite backend prefers exact raw text when legacy canonical duplicates exi
       sourceLayer: "L1",
     });
     const rows = db
-      .query(`SELECT id, text, canonical_text FROM memory_atoms WHERE user_id = 'u1' ORDER BY id ASC`)
-      .all() as Array<{ id: number; text: string; canonical_text: string | null }>;
+      .query(`SELECT id, text, canonical_text, importance, source_turn_ids_json FROM memory_atoms WHERE user_id = 'u1' ORDER BY id ASC`)
+      .all() as Array<{ id: number; text: string; canonical_text: string | null; importance: number; source_turn_ids_json: string }>;
 
     expect(result.created).toBe(false);
-    expect(result.atom.id).toBe(42);
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.id)).toEqual([41, 42]);
-    expect(rows.map((row) => row.text)).toEqual(["User's name is Wii.", "User’s name is Wii."]);
+    expect(result.atom.id).toBe(41);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      id: 41,
+      text: "User’s name is Wii.",
+      importance: 5,
+      source_turn_ids_json: JSON.stringify([7, 8, 9]),
+    }));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -300,6 +404,7 @@ test("migrate upgrades legacy app memory tables with missing columns", () => {
   expect(jobColumns.has("last_status")).toBe(true);
   expect(jobColumns.has("last_error")).toBe(true);
   expect(atomColumns.has("source_layer")).toBe(true);
+  expect(atomColumns.has("canonical_text")).toBe(true);
   expect(scenarioColumns.has("file_path")).toBe(true);
 });
 

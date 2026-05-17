@@ -74,6 +74,7 @@ export function migrate(db: Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       text TEXT NOT NULL,
+      canonical_text TEXT,
       importance INTEGER NOT NULL DEFAULT 3,
       source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
       source_layer TEXT NOT NULL DEFAULT 'L1',
@@ -156,6 +157,9 @@ export function migrate(db: Database) {
 
   if (!hasColumn(db, "memory_atoms", "source_layer")) {
     db.exec(`ALTER TABLE memory_atoms ADD COLUMN source_layer TEXT NOT NULL DEFAULT 'L1'`);
+  }
+  if (!hasColumn(db, "memory_atoms", "canonical_text")) {
+    db.exec(`ALTER TABLE memory_atoms ADD COLUMN canonical_text TEXT`);
   }
 
   if (!hasColumn(db, "memory_scenarios", "file_path")) {

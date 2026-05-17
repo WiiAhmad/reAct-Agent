@@ -1,5 +1,147 @@
 import type { Database } from "bun:sqlite";
-import { canonicalizeMemoryAtomText } from "./canonical";
+import { canonicalizeMemoryAtomText, mergeNumberSets } from "./canonical";
+import { embedTextToVector, serializeVector } from "./vec";
+
+function parseNumberArray(raw: string): number[] {
+  const parsed = JSON.parse(raw) as unknown;
+  return Array.isArray(parsed) ? parsed.filter((value): value is number => typeof value === "number") : [];
+}
+
+function hasColumn(db: Database, tableName: string, columnName: string): boolean {
+  return (db.query(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).some((row) => row.name === columnName);
+}
+
+function repointLineageAtomReferences(db: Database, userId: string, loserId: number, winnerId: number): void {
+  const sourceRows = db
+    .query(`SELECT id, target_kind, target_id, link_type, created_at FROM lineage_links WHERE user_id = ? AND source_kind = 'memory_atom' AND source_id = ?`)
+    .all(userId, String(loserId)) as Array<{
+      id: number;
+      target_kind: string;
+      target_id: string;
+      link_type: string;
+      created_at: string;
+    }>;
+
+  for (const row of sourceRows) {
+    db.query(`
+      INSERT OR IGNORE INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
+      VALUES (?, 'memory_atom', ?, ?, ?, ?, ?)
+    `).run(userId, String(winnerId), row.target_kind, row.target_id, row.link_type, row.created_at);
+    db.query(`DELETE FROM lineage_links WHERE id = ?`).run(row.id);
+  }
+
+  const targetRows = db
+    .query(`SELECT id, source_kind, source_id, link_type, created_at FROM lineage_links WHERE user_id = ? AND target_kind = 'memory_atom' AND target_id = ?`)
+    .all(userId, String(loserId)) as Array<{
+      id: number;
+      source_kind: string;
+      source_id: string;
+      link_type: string;
+      created_at: string;
+    }>;
+
+  for (const row of targetRows) {
+    db.query(`
+      INSERT OR IGNORE INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
+      VALUES (?, ?, ?, 'memory_atom', ?, ?, ?)
+    `).run(userId, row.source_kind, row.source_id, String(winnerId), row.link_type, row.created_at);
+    db.query(`DELETE FROM lineage_links WHERE id = ?`).run(row.id);
+  }
+}
+
+function rewriteScenarioAtomIds(db: Database, userId: string, loserId: number, winnerId: number): void {
+  const rows = db
+    .query(`SELECT id, atom_ids_json FROM memory_scenarios WHERE user_id = ? ORDER BY id ASC`)
+    .all(userId) as Array<{ id: number; atom_ids_json: string }>;
+
+  for (const row of rows) {
+    const ids = parseNumberArray(row.atom_ids_json);
+    if (!ids.includes(loserId)) {
+      continue;
+    }
+
+    const rewritten = [...new Set(ids.map((id) => (id === loserId ? winnerId : id)))];
+    db.query(`UPDATE memory_scenarios SET atom_ids_json = ? WHERE id = ?`).run(JSON.stringify(rewritten), row.id);
+  }
+}
+
+function backfillCanonicalText(db: Database): void {
+  const rows = db
+    .query(`SELECT id, text FROM memory_atoms WHERE canonical_text IS NULL OR canonical_text = '' ORDER BY id ASC`)
+    .all() as Array<{ id: number; text: string }>;
+
+  for (const row of rows) {
+    db.query(`UPDATE memory_atoms SET canonical_text = ? WHERE id = ?`).run(canonicalizeMemoryAtomText(row.text), row.id);
+  }
+}
+
+function compactCanonicalAtomDuplicates(db: Database): void {
+  const rows = db
+    .query(`
+      SELECT id, user_id, text, canonical_text, importance, source_turn_ids_json, updated_at
+      FROM memory_atoms
+      WHERE canonical_text IS NOT NULL AND canonical_text != ''
+      ORDER BY user_id ASC, canonical_text ASC, id ASC
+    `)
+    .all() as Array<{
+      id: number;
+      user_id: string;
+      text: string;
+      canonical_text: string;
+      importance: number;
+      source_turn_ids_json: string;
+      updated_at: string;
+    }>;
+
+  const groups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.user_id, row.canonical_text]);
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+
+  for (const group of groups.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    const winner = group[0]!;
+    const losers = group.slice(1);
+    const mergedSourceTurnIds = mergeNumberSets(...group.map((row) => parseNumberArray(row.source_turn_ids_json)));
+    const mergedImportance = Math.max(...group.map((row) => row.importance));
+    const newest = group.at(-1) ?? winner;
+    const winnerText = newest.text;
+    const updatedAt = newest.updated_at;
+    const embeddingJson = serializeVector(embedTextToVector(winnerText));
+
+    for (const loser of losers) {
+      repointLineageAtomReferences(db, winner.user_id, loser.id, winner.id);
+      rewriteScenarioAtomIds(db, winner.user_id, loser.id, winner.id);
+      db.query(`DELETE FROM memory_atoms_fts WHERE atom_id = ? AND user_id = ?`).run(String(loser.id), loser.user_id);
+      db.query(`DELETE FROM memory_atom_embeddings WHERE atom_id = ?`).run(loser.id);
+      db.query(`DELETE FROM memory_atoms WHERE id = ?`).run(loser.id);
+    }
+
+    db.query(`
+      UPDATE memory_atoms
+      SET text = ?, canonical_text = ?, importance = ?, source_turn_ids_json = ?, updated_at = ?
+      WHERE id = ?
+    `).run(winnerText, winner.canonical_text, mergedImportance, JSON.stringify(mergedSourceTurnIds), updatedAt, winner.id);
+
+    db.query(`DELETE FROM memory_atoms_fts WHERE atom_id = ? AND user_id = ?`).run(String(winner.id), winner.user_id);
+    db.query(`INSERT INTO memory_atoms_fts (text, atom_id, user_id) VALUES (?, ?, ?)`)
+      .run(winnerText, String(winner.id), winner.user_id);
+    db.query(`
+      INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(atom_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        embedding_json = excluded.embedding_json,
+        updated_at = excluded.updated_at
+    `).run(winner.id, winner.user_id, embeddingJson, updatedAt);
+  }
+}
 
 export function migrateSqliteMemory(db: Database) {
   db.exec(`
@@ -129,28 +271,23 @@ export function migrateSqliteMemory(db: Database) {
     );
   `);
 
-  const atomColumns = new Set(
-    (db.query(`PRAGMA table_info(memory_atoms)`).all() as Array<{ name: string }>).map((row) => row.name),
-  );
-  if (!atomColumns.has("canonical_text")) {
+  if (!hasColumn(db, "memory_atoms", "canonical_text")) {
     db.exec(`ALTER TABLE memory_atoms ADD COLUMN canonical_text TEXT`);
   }
-  if (!atomColumns.has("source_layer")) {
+  if (!hasColumn(db, "memory_atoms", "source_layer")) {
     db.exec(`ALTER TABLE memory_atoms ADD COLUMN source_layer TEXT NOT NULL DEFAULT 'L1'`);
   }
 
-  const atomsMissingCanonicalText = db
-    .query(`SELECT id, text FROM memory_atoms WHERE canonical_text IS NULL OR canonical_text = ''`)
-    .all() as Array<{ id: number; text: string }>;
-  const updateCanonicalText = db.query(`UPDATE memory_atoms SET canonical_text = ? WHERE id = ?`);
-  for (const atom of atomsMissingCanonicalText) {
-    updateCanonicalText.run(canonicalizeMemoryAtomText(atom.text), atom.id);
-  }
+  backfillCanonicalText(db);
+  compactCanonicalAtomDuplicates(db);
 
-  const scenarioColumns = new Set(
-    (db.query(`PRAGMA table_info(memory_scenarios)`).all() as Array<{ name: string }>).map((row) => row.name),
-  );
-  if (!scenarioColumns.has("file_path")) {
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_atoms_user_canonical_text_idx
+    ON memory_atoms (user_id, canonical_text)
+    WHERE canonical_text IS NOT NULL AND canonical_text != ''
+  `);
+
+  if (!hasColumn(db, "memory_scenarios", "file_path")) {
     db.exec(`ALTER TABLE memory_scenarios ADD COLUMN file_path TEXT`);
   }
 }
