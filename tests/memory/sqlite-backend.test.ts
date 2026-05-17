@@ -277,6 +277,99 @@ test("migrateSqliteMemory backfills canonical_text and compacts exact duplicate 
   expect(duplicateLineageCount.count).toBe(0);
 });
 
+test("migrateSqliteMemory removes lineage self-links created by duplicate compaction", () => {
+  const db = new Database(":memory:");
+
+  db.exec(`
+    CREATE TABLE memory_atoms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      importance INTEGER NOT NULL DEFAULT 3,
+      source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_layer TEXT NOT NULL DEFAULT 'L1',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, text)
+    );
+
+    CREATE TABLE lineage_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      link_type TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, source_kind, source_id, target_kind, target_id, link_type)
+    );
+
+    INSERT INTO memory_atoms (id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+    VALUES
+      (1, 'u1', 'User''s name is Wii.', 2, '[1]', 'L1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+      (2, 'u1', 'User’s name is Wii.', 3, '[2]', 'L1', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+
+    INSERT INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
+    VALUES
+      ('u1', 'memory_atom', '1', 'memory_atom', '2', 'derived_from', '2026-01-02T00:00:00.000Z'),
+      ('u1', 'memory_atom', '2', 'memory_atom', '1', 'derived_from', '2026-01-02T00:00:00.000Z');
+  `);
+
+  migrateSqliteMemory(db);
+
+  const atoms = db.query(`SELECT id FROM memory_atoms ORDER BY id ASC`).all() as Array<{ id: number }>;
+  const selfLinkCount = db.query(`
+    SELECT COUNT(*) AS count
+    FROM lineage_links
+    WHERE source_kind = 'memory_atom'
+      AND target_kind = 'memory_atom'
+      AND source_id = target_id
+  `).get() as { count: number };
+
+  expect(atoms).toEqual([{ id: 1 }]);
+  expect(selfLinkCount.count).toBe(0);
+});
+
+test("migrateSqliteMemory keeps lowest duplicate id but preserves latest updated text", () => {
+  const db = new Database(":memory:");
+
+  db.exec(`
+    CREATE TABLE memory_atoms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      importance INTEGER NOT NULL DEFAULT 3,
+      source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_layer TEXT NOT NULL DEFAULT 'L1',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, text)
+    );
+
+    INSERT INTO memory_atoms (id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+    VALUES
+      (1, 'u1', 'User’s name is Wii.', 2, '[1]', 'L1', '2026-01-01T00:00:00.000Z', '2026-01-03T00:00:00.000Z'),
+      (2, 'u1', 'User''s name is Wii.', 3, '[2]', 'L1', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+  `);
+
+  migrateSqliteMemory(db);
+
+  const atoms = db.query(`SELECT id, text, updated_at FROM memory_atoms ORDER BY id ASC`).all() as Array<{
+    id: number;
+    text: string;
+    updated_at: string;
+  }>;
+
+  expect(atoms).toEqual([
+    {
+      id: 1,
+      text: "User’s name is Wii.",
+      updated_at: "2026-01-03T00:00:00.000Z",
+    },
+  ]);
+});
+
 test("migrateSqliteMemory compacts empty canonical_text duplicates and indexes non-null canonical text", () => {
   const db = new Database(":memory:");
 

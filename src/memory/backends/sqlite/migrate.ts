@@ -23,10 +23,13 @@ function repointLineageAtomReferences(db: Database, userId: string, loserId: num
     }>;
 
   for (const row of sourceRows) {
-    db.query(`
-      INSERT OR IGNORE INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
-      VALUES (?, 'memory_atom', ?, ?, ?, ?, ?)
-    `).run(userId, String(winnerId), row.target_kind, row.target_id, row.link_type, row.created_at);
+    const targetId = row.target_kind === "memory_atom" && row.target_id === String(loserId) ? String(winnerId) : row.target_id;
+    if (!(row.target_kind === "memory_atom" && targetId === String(winnerId))) {
+      db.query(`
+        INSERT OR IGNORE INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
+        VALUES (?, 'memory_atom', ?, ?, ?, ?, ?)
+      `).run(userId, String(winnerId), row.target_kind, targetId, row.link_type, row.created_at);
+    }
     db.query(`DELETE FROM lineage_links WHERE id = ?`).run(row.id);
   }
 
@@ -41,10 +44,13 @@ function repointLineageAtomReferences(db: Database, userId: string, loserId: num
     }>;
 
   for (const row of targetRows) {
-    db.query(`
-      INSERT OR IGNORE INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
-      VALUES (?, ?, ?, 'memory_atom', ?, ?, ?)
-    `).run(userId, row.source_kind, row.source_id, String(winnerId), row.link_type, row.created_at);
+    const sourceId = row.source_kind === "memory_atom" && row.source_id === String(loserId) ? String(winnerId) : row.source_id;
+    if (!(row.source_kind === "memory_atom" && sourceId === String(winnerId))) {
+      db.query(`
+        INSERT OR IGNORE INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
+        VALUES (?, ?, ?, 'memory_atom', ?, ?, ?)
+      `).run(userId, row.source_kind, sourceId, String(winnerId), row.link_type, row.created_at);
+    }
     db.query(`DELETE FROM lineage_links WHERE id = ?`).run(row.id);
   }
 }
@@ -110,7 +116,15 @@ function compactCanonicalAtomDuplicates(db: Database): void {
     const losers = group.slice(1);
     const mergedSourceTurnIds = mergeNumberSets(...group.map((row) => parseNumberArray(row.source_turn_ids_json)));
     const mergedImportance = Math.max(...group.map((row) => row.importance));
-    const newest = group.at(-1) ?? winner;
+    const newest = group.reduce((best, row) => {
+      if (row.updated_at > best.updated_at) {
+        return row;
+      }
+      if (row.updated_at === best.updated_at && row.id > best.id) {
+        return row;
+      }
+      return best;
+    }, winner);
     const winnerText = newest.text;
     const updatedAt = newest.updated_at;
     const embeddingJson = serializeVector(embedTextToVector(winnerText));
