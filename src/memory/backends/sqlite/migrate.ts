@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { canonicalizeMemoryAtomText } from "./canonical";
 
 export function migrateSqliteMemory(db: Database) {
   db.exec(`
@@ -136,6 +137,14 @@ export function migrateSqliteMemory(db: Database) {
   }
   if (!atomColumns.has("source_layer")) {
     db.exec(`ALTER TABLE memory_atoms ADD COLUMN source_layer TEXT NOT NULL DEFAULT 'L1'`);
+  }
+
+  const atomsMissingCanonicalText = db
+    .query(`SELECT id, text FROM memory_atoms WHERE canonical_text IS NULL OR canonical_text = ''`)
+    .all() as Array<{ id: number; text: string }>;
+  const updateCanonicalText = db.query(`UPDATE memory_atoms SET canonical_text = ? WHERE id = ?`);
+  for (const atom of atomsMissingCanonicalText) {
+    updateCanonicalText.run(canonicalizeMemoryAtomText(atom.text), atom.id);
   }
 
   const scenarioColumns = new Set(

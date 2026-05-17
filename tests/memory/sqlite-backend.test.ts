@@ -106,7 +106,7 @@ test("SQLite backend round-trips checkpoint values including numbers", async () 
   }
 });
 
-test("migrate upgrades legacy memory_atoms table for canonical atom upserts", async () => {
+test("migrate backfills canonical text for exact legacy memory atom upserts", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 
   try {
@@ -123,6 +123,24 @@ test("migrate upgrades legacy memory_atoms table for canonical atom upserts", as
         updated_at TEXT NOT NULL,
         UNIQUE(user_id, text)
       );
+
+      CREATE VIRTUAL TABLE memory_atoms_fts USING fts5(
+        text,
+        atom_id UNINDEXED,
+        user_id UNINDEXED,
+        tokenize = 'unicode61'
+      );
+
+      CREATE TABLE memory_atom_embeddings (
+        atom_id INTEGER PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        embedding_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(atom_id) REFERENCES memory_atoms(id) ON DELETE CASCADE
+      );
+
+      INSERT INTO memory_atoms (id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+      VALUES (42, 'u1', 'User prefers concise responses.', 2, '[7]', 'L1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
     `);
     migrateSqliteMemory(db);
 
@@ -135,12 +153,25 @@ test("migrate upgrades legacy memory_atoms table for canonical atom upserts", as
     const result = await backend.upsertMemoryAtom({
       userId: "u1",
       text: "User prefers concise responses.",
-      sourceConversationIds: [1],
+      importance: 5,
+      sourceConversationIds: [9, 7],
       sourceLayer: "L1",
     });
+    const rows = db.query(`SELECT id, canonical_text FROM memory_atoms WHERE user_id = 'u1'`).all() as Array<{
+      id: number;
+      canonical_text: string | null;
+    }>;
 
-    expect(result.created).toBe(true);
-    expect(result.atom.text).toBe("User prefers concise responses.");
+    expect(result.created).toBe(false);
+    expect(result.atom.id).toBe(42);
+    expect(result.atom.importance).toBe(5);
+    expect(result.atom.sourceConversationIds).toEqual([7, 9]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      id: 42,
+      canonical_text: expect.any(String),
+    });
+    expect(rows[0]?.canonical_text).not.toBe("");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
