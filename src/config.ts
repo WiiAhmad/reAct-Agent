@@ -38,7 +38,6 @@ export function parseConfig(source: ConfigSource) {
   const memoryRefsDir = resolvePath(`${memoryDir}/refs`);
   const memoryCanvasDir = resolvePath(`${memoryDir}/canvases`);
   const memoryJsonlExportDir = resolvePath(env(source, "MEMORY_JSONL_EXPORT_DIR", `${memoryDir}/jsonl`));
-  const mcpConfigPath = resolvePath(env(source, "MCP_CONFIG_PATH", "./mcp.servers.json"));
 
   return {
     telegram: {
@@ -69,7 +68,6 @@ export function parseConfig(source: ConfigSource) {
       memoryRefsDir,
       memoryCanvasDir,
       memoryJsonlExportDir,
-      mcpConfigPath,
     },
     memory: {
       maintenanceCron: env(source, "MEMORY_MAINTENANCE_CRON", "*/10 * * * *"),

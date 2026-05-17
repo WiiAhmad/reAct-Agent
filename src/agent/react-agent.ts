@@ -90,7 +90,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     },
   });
 
-  const system = `You are a Telegram AI agent running on grammY + MCP tools + a project-owned local memory backend.
+  const system = `You are a Telegram AI agent running on grammY with built-in local tools and a project-owned local memory backend.
 
 Use a ReAct-style loop internally:
 1. Understand the user goal.

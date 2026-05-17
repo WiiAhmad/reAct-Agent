@@ -1,9 +1,0 @@
-{
-  "servers": {
-    "demo": {
-      "command": "bun",
-      "args": ["src/mcp/demo-server.ts"],
-      "env": {}
-    }
-  }
-}

@@ -12,25 +12,15 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
     this.db
       .query(`
-        INSERT INTO tool_registry (name, source, server_name, original_name, description, input_schema_json, enabled, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO tool_registry (name, source, description, input_schema_json, enabled, updated_at)
+        VALUES (?, ?, ?, ?, 1, ?)
         ON CONFLICT(name) DO UPDATE SET
           source = excluded.source,
-          server_name = excluded.server_name,
-          original_name = excluded.original_name,
           description = excluded.description,
           input_schema_json = excluded.input_schema_json,
           updated_at = excluded.updated_at
       `)
-      .run(
-        tool.name,
-        tool.source,
-        tool.serverName ?? null,
-        tool.originalName ?? null,
-        tool.description,
-        JSON.stringify(tool.inputSchema),
-        nowIso(),
-      );
+      .run(tool.name, tool.source, tool.description, JSON.stringify(tool.inputSchema), nowIso());
   }
 
   registerMany(tools: RegisteredTool[]) {
@@ -45,11 +35,10 @@ export class ToolRegistry {
     }));
   }
 
-  listDebug(): Array<Pick<RegisteredTool, "name" | "source" | "serverName" | "description">> {
+  listDebug(): Array<Pick<RegisteredTool, "name" | "source" | "description">> {
     return [...this.tools.values()].map((tool) => ({
       name: tool.name,
       source: tool.source,
-      serverName: tool.serverName,
       description: tool.description,
     }));
   }

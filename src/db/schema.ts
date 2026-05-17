@@ -6,6 +6,26 @@ function hasColumn(db: Database, tableName: string, columnName: string) {
   return columns.some((column) => column.name === columnName);
 }
 
+function rebuildToolRegistry(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tool_registry__new (
+      name TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      description TEXT NOT NULL,
+      input_schema_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL
+    );
+
+    INSERT INTO tool_registry__new (name, source, description, input_schema_json, enabled, updated_at)
+    SELECT name, source, description, input_schema_json, enabled, updated_at
+    FROM tool_registry;
+
+    DROP TABLE tool_registry;
+    ALTER TABLE tool_registry__new RENAME TO tool_registry;
+  `);
+}
+
 export function migrate(db: Database) {
   migrateSqliteMemory(db);
 
@@ -13,8 +33,6 @@ export function migrate(db: Database) {
     CREATE TABLE IF NOT EXISTS tool_registry (
       name TEXT PRIMARY KEY,
       source TEXT NOT NULL,
-      server_name TEXT,
-      original_name TEXT,
       description TEXT NOT NULL,
       input_schema_json TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -32,9 +50,6 @@ export function migrate(db: Database) {
       updated_at TEXT NOT NULL
     );
 
-    -- Transitional compatibility schema for the current app runtime.
-    -- Task 2's dedicated SQLite memory migrator stays minimal while the project-owned
-    -- runtime keeps using these memory tables directly.
     CREATE TABLE IF NOT EXISTS memory_atoms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
@@ -114,6 +129,10 @@ export function migrate(db: Database) {
       created_at TEXT NOT NULL
     );
   `);
+
+  if (hasColumn(db, "tool_registry", "server_name") || hasColumn(db, "tool_registry", "original_name")) {
+    rebuildToolRegistry(db);
+  }
 
   if (!hasColumn(db, "memory_atoms", "source_layer")) {
     db.exec(`ALTER TABLE memory_atoms ADD COLUMN source_layer TEXT NOT NULL DEFAULT 'L1'`);

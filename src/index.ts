@@ -4,8 +4,6 @@ import { createLlmProvider } from "./agent/providers";
 import { createMemoryService } from "./memory/integration/factory";
 import { ToolRegistry } from "./tools/registry";
 import { createLocalTools } from "./tools/local";
-import { loadMcpConfig } from "./mcp/config";
-import { McpManager } from "./mcp/manager";
 import { createTelegramBot } from "./bot/bot";
 import { startAutonomousLoop, startMemoryMaintenanceLoop } from "./cron/autonomous";
 
@@ -38,22 +36,10 @@ async function main() {
     },
   });
   const registry = new ToolRegistry(db);
-  const mcpManager = new McpManager();
 
   const bot = createTelegramBot({ db, memory, registry, llm });
 
   registry.registerMany(createLocalTools(memory, bot.api));
-
-  const mcpConfig = loadMcpConfig();
-  for (const [serverName, serverConfig] of Object.entries(mcpConfig.servers)) {
-    try {
-      const tools = await mcpManager.connectServer(serverName, serverConfig);
-      registry.registerMany(tools);
-      console.log(`MCP server connected: ${serverName}, tools=${tools.length}`);
-    } catch (error) {
-      console.error(`Failed to connect MCP server ${serverName}`, error);
-    }
-  }
 
   startAutonomousLoop({ db, bot, memory, registry, llm });
   startMemoryMaintenanceLoop({ db, memory, llm });
@@ -61,7 +47,6 @@ async function main() {
   const stop = async () => {
     console.log("Shutting down...");
     await bot.stop().catch(() => undefined);
-    await mcpManager.closeAll();
     db.close();
     process.exit(0);
   };

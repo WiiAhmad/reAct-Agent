@@ -1,5 +1,5 @@
 {
-  "name": "grammy-mcp-openai-claude-agent-bun",
+  "name": "grammy-openai-claude-agent-bun",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,7 +14,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
     "@grammyjs/conversations": "^2.1.1",
-    "@modelcontextprotocol/sdk": "latest",
     "grammy": "latest",
     "node-cron": "latest",
     "openai": "latest",

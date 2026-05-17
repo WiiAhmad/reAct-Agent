@@ -1,10 +1,9 @@
-# grammY + MCP + OpenAI/Claude Agent on Bun
+# grammY + OpenAI/Claude Agent on Bun
 
 Boilerplate Telegram AI agent dengan:
 
 - Bun runtime
 - grammY Telegram bot
-- MCP multi-server tool registry
 - OpenAI / OpenAI-compatible provider
 - Claude native provider
 - SQLite lokal via `bun:sqlite`
@@ -19,7 +18,6 @@ Boilerplate Telegram AI agent dengan:
 ```bash
 bun install
 cp .env.example .env
-cp mcp.servers.example.json mcp.servers.json
 ```
 
 Isi `.env` minimal:
@@ -118,28 +116,6 @@ save_memory                 save durable L1 atom
 telegram_send_message       send Telegram messages during autonomous runs
 ```
 
-## 7. MCP Tools
-
-Default config menjalankan demo MCP server:
-
-```json
-{
-  "servers": {
-    "demo": {
-      "command": "bun",
-      "args": ["src/mcp/demo-server.ts"],
-      "env": {}
-    }
-  }
-}
-```
-
-Tool dari MCP didaftarkan sebagai:
-
-```text
-mcp_<serverName>_<originalToolName>
-```
-
 ## 8. Commands
 
 ```text
@@ -158,8 +134,6 @@ src/index.ts                  bootstrap app
 src/bot/bot.ts                grammY handlers
 src/agent/react-agent.ts      ReAct-style tool loop + offload integration
 src/agent/providers/*         OpenAI/Claude abstraction
-src/mcp/manager.ts            MCP client manager
-src/mcp/demo-server.ts        sample MCP server
 src/tools/registry.ts         multi-tool registry persisted in SQLite
 src/tools/local.ts            tdai_* memory tools + Telegram tool
 src/memory/core/service.ts    project-owned memory service facade
@@ -173,4 +147,3 @@ scripts/inspect-memory.ts     inspect the local memory backend
 
 - Runtime memory sepenuhnya dimiliki project ini; tidak perlu vendor workflow eksternal untuk menjalankannya.
 - `src/memory/jsonl.ts` tetap dipakai untuk export/append JSONL event trail.
-- Jangan expose filesystem/shell MCP tools ke user publik tanpa allowlist.

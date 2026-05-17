@@ -13,6 +13,16 @@ test("parseConfig defaults to local-first SQLite memory settings", () => {
   expect(runtime.storage.memoryJsonlExportDir.endsWith("data/memory/jsonl")).toBe(true);
 });
 
+test("parseConfig no longer exposes an MCP config path", () => {
+  const runtime = parseConfig({
+    BOT_TOKEN: "123:abc",
+    LLM_PROVIDER: "openai",
+    OPENAI_API_KEY: "sk-test",
+  });
+
+  expect("mcpConfigPath" in runtime.storage).toBe(false);
+});
+
 test("parseConfig can enable JSONL export explicitly", () => {
   const runtime = parseConfig({
     BOT_TOKEN: "123:abc",

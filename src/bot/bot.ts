@@ -45,11 +45,7 @@ export function createTelegramBot(deps: BotDeps) {
   bot.command("tools", async (ctx) => {
     const tools = deps.registry.listDebug();
     if (tools.length === 0) return ctx.reply("Belum ada tools terdaftar.");
-    await ctx.reply(
-      tools
-        .map((tool) => `- ${tool.name} [${tool.source}${tool.serverName ? `:${tool.serverName}` : ""}]\n  ${tool.description}`)
-        .join("\n"),
-    );
+    await ctx.reply(tools.map((tool) => `- ${tool.name} [${tool.source}]\n  ${tool.description}`).join("\n"));
   });
 
   bot.command("memory", async (ctx) => {

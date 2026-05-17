@@ -10,8 +10,6 @@ export type ToolContext = {
 };
 
 export type RegisteredTool = ToolDefinition & {
-  source: "local" | "mcp";
-  serverName?: string;
-  originalName?: string;
+  source: "local";
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
 };
