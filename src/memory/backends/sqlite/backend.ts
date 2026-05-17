@@ -28,6 +28,7 @@ import type {
   UpsertMemoryAtomResult,
 } from "../../core/types";
 import { migrateSqliteMemory } from "./migrate";
+import { canonicalizeMemoryAtomText, mergeNumberSets } from "./canonical";
 import { deserializeVector, embedTextToVector, ensureSqliteVecTable, isZeroVector, loadSqliteVec, serializeVector } from "./vec";
 import type { Database } from "bun:sqlite";
 
@@ -108,6 +109,16 @@ export class SqliteMemoryBackend implements MemoryBackend {
     private readonly options: SqliteMemoryBackendOptions,
   ) {}
 
+  private ensureMemoryAtomCanonicalTextColumn(): void {
+    const atomColumns = new Set(
+      (this.db.query(`PRAGMA table_info(memory_atoms)`).all() as Array<{ name: string }>).map((row) => row.name),
+    );
+
+    if (!atomColumns.has("canonical_text")) {
+      this.db.exec(`ALTER TABLE memory_atoms ADD COLUMN canonical_text TEXT`);
+    }
+  }
+
   private indexMemoryAtomVector(atomId: number, embeddingJson: string): void {
     if (!this.vecReady) {
       return;
@@ -115,6 +126,25 @@ export class SqliteMemoryBackend implements MemoryBackend {
 
     this.db.query(`DELETE FROM memory_atoms_vec WHERE rowid = ?`).run(atomId);
     this.db.query(`INSERT INTO memory_atoms_vec(rowid, embedding) VALUES (?, ?)`).run(atomId, deserializeVector(embeddingJson));
+  }
+
+  private replaceMemoryAtomSearchRow(atomId: number, userId: string, text: string): void {
+    this.db.query(`DELETE FROM memory_atoms_fts WHERE atom_id = ? AND user_id = ?`).run(String(atomId), userId);
+    this.db.query(`INSERT INTO memory_atoms_fts (text, atom_id, user_id) VALUES (?, ?, ?)`).run(text, String(atomId), userId);
+  }
+
+  private upsertMemoryAtomEmbedding(atomId: number, userId: string, embeddingJson: string, updatedAt: string): void {
+    this.db
+      .query(`
+        INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(atom_id) DO UPDATE SET
+          user_id = excluded.user_id,
+          embedding_json = excluded.embedding_json,
+          updated_at = excluded.updated_at
+      `)
+      .run(atomId, userId, embeddingJson, updatedAt);
+    this.indexMemoryAtomVector(atomId, embeddingJson);
   }
 
   private rebuildMemoryAtomVectorIndex(): void {
@@ -434,21 +464,29 @@ export class SqliteMemoryBackend implements MemoryBackend {
   }
 
   async upsertMemoryAtom(atom: NewMemoryAtom): Promise<UpsertMemoryAtomResult> {
+    this.ensureMemoryAtomCanonicalTextColumn();
+
     const text = atom.text.trim();
     if (!text) {
       throw new Error("Memory atom text cannot be empty");
     }
 
+    const canonicalText = canonicalizeMemoryAtomText(text);
+    if (!canonicalText) {
+      throw new Error("Memory atom canonical text cannot be empty");
+    }
+
     const existing = this.db
       .query(`
-        SELECT id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at
+        SELECT id, user_id, text, canonical_text, importance, source_turn_ids_json, source_layer, created_at, updated_at
         FROM memory_atoms
-        WHERE user_id = ? AND text = ?
+        WHERE user_id = ? AND canonical_text = ?
       `)
-      .get(atom.userId, text) as {
+      .get(atom.userId, canonicalText) as {
       id: number;
       user_id: string;
       text: string;
+      canonical_text: string;
       importance: number;
       source_turn_ids_json: string;
       source_layer: MemoryAtom["sourceLayer"];
@@ -463,33 +501,39 @@ export class SqliteMemoryBackend implements MemoryBackend {
     const embeddingJson = serializeVector(embedTextToVector(text));
 
     if (existing) {
+      const mergedSourceConversationIds = mergeNumberSets(
+        parseNumberArray(existing.source_turn_ids_json),
+        sourceConversationIds,
+      );
+      const mergedImportance = Math.max(existing.importance, importance);
+
       this.db
         .query(`
           UPDATE memory_atoms
-          SET importance = ?, source_turn_ids_json = ?, source_layer = ?, updated_at = ?
+          SET text = ?, canonical_text = ?, importance = ?, source_turn_ids_json = ?, source_layer = ?, updated_at = ?
           WHERE id = ?
         `)
-        .run(importance, JSON.stringify(sourceConversationIds), sourceLayer, updatedAt, existing.id);
-      this.db
-        .query(`
-          INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(atom_id) DO UPDATE SET
-            user_id = excluded.user_id,
-            embedding_json = excluded.embedding_json,
-            updated_at = excluded.updated_at
-        `)
-        .run(existing.id, atom.userId, embeddingJson, updatedAt);
-      this.indexMemoryAtomVector(existing.id, embeddingJson);
+        .run(
+          text,
+          canonicalText,
+          mergedImportance,
+          JSON.stringify(mergedSourceConversationIds),
+          sourceLayer,
+          updatedAt,
+          existing.id,
+        );
+
+      this.replaceMemoryAtomSearchRow(existing.id, atom.userId, text);
+      this.upsertMemoryAtomEmbedding(existing.id, atom.userId, embeddingJson, updatedAt);
 
       return {
         created: false,
         atom: {
           id: existing.id,
           userId: existing.user_id,
-          text: existing.text,
-          importance,
-          sourceConversationIds,
+          text,
+          importance: mergedImportance,
+          sourceConversationIds: mergedSourceConversationIds,
           sourceLayer,
           createdAt: existing.created_at,
           updatedAt,
@@ -500,20 +544,14 @@ export class SqliteMemoryBackend implements MemoryBackend {
     const createdAt = updatedAt;
     const result = this.db
       .query(`
-        INSERT INTO memory_atoms (user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO memory_atoms (user_id, text, canonical_text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(atom.userId, text, importance, JSON.stringify(sourceConversationIds), sourceLayer, createdAt, updatedAt);
+      .run(atom.userId, text, canonicalText, importance, JSON.stringify(sourceConversationIds), sourceLayer, createdAt, updatedAt);
 
     const id = Number(result.lastInsertRowid);
-    this.db.query(`INSERT INTO memory_atoms_fts (text, atom_id, user_id) VALUES (?, ?, ?)`).run(text, String(id), atom.userId);
-    this.db
-      .query(`
-        INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at)
-        VALUES (?, ?, ?, ?)
-      `)
-      .run(id, atom.userId, embeddingJson, updatedAt);
-    this.indexMemoryAtomVector(id, embeddingJson);
+    this.replaceMemoryAtomSearchRow(id, atom.userId, text);
+    this.upsertMemoryAtomEmbedding(id, atom.userId, embeddingJson, updatedAt);
 
     return {
       created: true,

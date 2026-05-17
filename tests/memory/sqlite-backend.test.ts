@@ -201,3 +201,83 @@ test("app schema keeps transitional legacy memory tables available", () => {
     "updated_at",
   ]);
 });
+
+test("SQLite backend canonicalizes obvious atom variants on upsert", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+
+    const first = await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User's name is Wii.",
+      importance: 2,
+      sourceConversationIds: [1],
+      sourceLayer: "L1",
+    });
+    const second = await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User’s name is Wii.",
+      importance: 5,
+      sourceConversationIds: [2, 1],
+      sourceLayer: "L1",
+    });
+
+    const atoms = await backend.listMemoryAtoms("u1", 10);
+    const row = db
+      .query(`SELECT canonical_text FROM memory_atoms WHERE id = ?`)
+      .get(first.atom.id) as { canonical_text: string | null } | null;
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.atom.id).toBe(first.atom.id);
+    expect(atoms).toEqual([
+      expect.objectContaining({
+        id: first.atom.id,
+        text: "User’s name is Wii.",
+        importance: 5,
+        sourceConversationIds: [1, 2],
+      }),
+    ]);
+    expect(row?.canonical_text).not.toBeNull();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite backend keeps broader paraphrases separate when canonical text differs", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+
+    await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User prefers the assistant not to use bold formatting like **text**.",
+      sourceConversationIds: [3],
+      sourceLayer: "L1",
+    });
+    await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User does not want the assistant to use ** (bold/markdown tebal) in answers.",
+      sourceConversationIds: [4],
+      sourceLayer: "L1",
+    });
+
+    expect(await backend.listMemoryAtoms("u1", 10)).toHaveLength(2);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
