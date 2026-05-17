@@ -277,6 +277,87 @@ test("migrateSqliteMemory backfills canonical_text and compacts exact duplicate 
   expect(duplicateLineageCount.count).toBe(0);
 });
 
+test("migrateSqliteMemory compacts empty canonical_text duplicates and indexes non-null canonical text", () => {
+  const db = new Database(":memory:");
+
+  db.exec(`
+    CREATE TABLE memory_atoms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      importance INTEGER NOT NULL DEFAULT 3,
+      source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_layer TEXT NOT NULL DEFAULT 'L1',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, text)
+    );
+
+    CREATE VIRTUAL TABLE memory_atoms_fts USING fts5(
+      text,
+      atom_id UNINDEXED,
+      user_id UNINDEXED,
+      tokenize = 'unicode61'
+    );
+
+    CREATE TABLE memory_atom_embeddings (
+      atom_id INTEGER PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      embedding_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE lineage_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      link_type TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, source_kind, source_id, target_kind, target_id, link_type)
+    );
+
+    CREATE TABLE memory_scenarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body_markdown TEXT NOT NULL,
+      atom_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    INSERT INTO memory_atoms (id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+    VALUES
+      (1, 'u1', '!!!', 1, '[1]', 'L1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+      (2, 'u1', '???', 4, '[2]', 'L1', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+  `);
+
+  migrateSqliteMemory(db);
+
+  const atoms = db.query(`SELECT id, canonical_text, importance, source_turn_ids_json FROM memory_atoms ORDER BY id ASC`).all() as Array<{
+    id: number;
+    canonical_text: string | null;
+    importance: number;
+    source_turn_ids_json: string;
+  }>;
+  const index = db.query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'memory_atoms_user_canonical_text_idx'`).get() as { sql: string } | null;
+  const normalizedIndexSql = index?.sql.replace(/\s+/g, " ").trim();
+
+  expect(atoms).toEqual([
+    {
+      id: 1,
+      canonical_text: "",
+      importance: 4,
+      source_turn_ids_json: JSON.stringify([1, 2]),
+    },
+  ]);
+  expect(normalizedIndexSql).toContain("WHERE canonical_text IS NOT NULL");
+  expect(normalizedIndexSql).not.toContain("canonical_text != ''");
+});
+
 test("SQLite backend uses compacted canonical duplicate survivor after migration", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 

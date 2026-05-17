@@ -80,7 +80,7 @@ function compactCanonicalAtomDuplicates(db: Database): void {
     .query(`
       SELECT id, user_id, text, canonical_text, importance, source_turn_ids_json, updated_at
       FROM memory_atoms
-      WHERE canonical_text IS NOT NULL AND canonical_text != ''
+      WHERE canonical_text IS NOT NULL
       ORDER BY user_id ASC, canonical_text ASC, id ASC
     `)
     .all() as Array<{
@@ -284,7 +284,7 @@ export function migrateSqliteMemory(db: Database) {
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS memory_atoms_user_canonical_text_idx
     ON memory_atoms (user_id, canonical_text)
-    WHERE canonical_text IS NOT NULL AND canonical_text != ''
+    WHERE canonical_text IS NOT NULL
   `);
 
   if (!hasColumn(db, "memory_scenarios", "file_path")) {
