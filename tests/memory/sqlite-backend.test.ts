@@ -177,6 +177,73 @@ test("migrate backfills canonical text for exact legacy memory atom upserts", as
   }
 });
 
+test("SQLite backend prefers exact raw text when legacy canonical duplicates exist", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE memory_atoms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        importance INTEGER NOT NULL DEFAULT 3,
+        source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+        source_layer TEXT NOT NULL DEFAULT 'L1',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, text)
+      );
+
+      CREATE VIRTUAL TABLE memory_atoms_fts USING fts5(
+        text,
+        atom_id UNINDEXED,
+        user_id UNINDEXED,
+        tokenize = 'unicode61'
+      );
+
+      CREATE TABLE memory_atom_embeddings (
+        atom_id INTEGER PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        embedding_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(atom_id) REFERENCES memory_atoms(id) ON DELETE CASCADE
+      );
+
+      INSERT INTO memory_atoms (id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+      VALUES
+        (41, 'u1', 'User''s name is Wii.', 2, '[7]', 'L1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+        (42, 'u1', 'User’s name is Wii.', 3, '[8]', 'L1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+    migrateSqliteMemory(db);
+
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+
+    const result = await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User’s name is Wii.",
+      importance: 5,
+      sourceConversationIds: [9],
+      sourceLayer: "L1",
+    });
+    const rows = db
+      .query(`SELECT id, text, canonical_text FROM memory_atoms WHERE user_id = 'u1' ORDER BY id ASC`)
+      .all() as Array<{ id: number; text: string; canonical_text: string | null }>;
+
+    expect(result.created).toBe(false);
+    expect(result.atom.id).toBe(42);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.id)).toEqual([41, 42]);
+    expect(rows.map((row) => row.text)).toEqual(["User's name is Wii.", "User’s name is Wii."]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("migrate upgrades legacy app memory tables with missing columns", () => {
   const db = new Database(":memory:");
 

@@ -469,8 +469,10 @@ export class SqliteMemoryBackend implements MemoryBackend {
         SELECT id, user_id, text, canonical_text, importance, source_turn_ids_json, source_layer, created_at, updated_at
         FROM memory_atoms
         WHERE user_id = ? AND canonical_text = ?
+        ORDER BY CASE WHEN text = ? THEN 0 ELSE 1 END, id ASC
+        LIMIT 1
       `)
-      .get(atom.userId, canonicalText) as {
+      .get(atom.userId, canonicalText, text) as {
       id: number;
       user_id: string;
       text: string;
