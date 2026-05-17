@@ -3,14 +3,14 @@ import type { Database } from "bun:sqlite";
 import { config } from "../config";
 import type { LlmProvider } from "../agent/types";
 import { runReactAgent } from "../agent/react-agent";
-import type { MemoryStore } from "../memory/store";
+import type { MemoryService } from "../memory/core/service";
 import type { ToolRegistry } from "../tools/registry";
 import { splitTelegramMessage, truncateText } from "../utils/text";
 import { nowIso } from "../utils/time";
 
 export type BotDeps = {
   db: Database;
-  memory: MemoryStore;
+  memory: MemoryService;
   registry: ToolRegistry;
   llm: LlmProvider;
 };
@@ -31,7 +31,7 @@ export function createTelegramBot(deps: BotDeps) {
     await ctx.reply(
       [
         "Halo. Bot siap.",
-        "Memory: TencentDB-Agent-Memory style local adapter (L0/L1/L2/L3 + refs + Mermaid canvas).",
+        "Memory: project-owned memory backend (SQLite + L0/L1/L2/L3 + refs + Mermaid canvas).",
         "Commands:",
         "/tools - lihat tools aktif",
         "/memory - lihat persona/memory snapshot",
@@ -55,9 +55,9 @@ export function createTelegramBot(deps: BotDeps) {
   bot.command("memory", async (ctx) => {
     const chatId = String(ctx.chat.id);
     const userId = String(ctx.from?.id ?? ctx.chat.id);
-    const persona = deps.memory.getPersona(userId) ?? "Belum ada L3 persona.";
     const recall = await deps.memory.recall(userId, "project preferences workflow coding", 5, chatId);
-    const status = deps.memory.memoryStatus(userId, chatId);
+    const persona = recall.persona ?? "Belum ada L3 persona.";
+    const status = await deps.memory.memoryStatus(userId, chatId);
     await ctx.reply(
       [
         "# Memory status",
@@ -67,7 +67,7 @@ export function createTelegramBot(deps: BotDeps) {
         persona,
         "",
         "# L2 Scenarios",
-        recall.scenarios.length ? recall.scenarios.map((s) => `- #${s.id}: ${s.title}${s.file_path ? ` (${s.file_path})` : ""}`).join("\n") : "Belum ada scenario.",
+        recall.scenarios.length ? recall.scenarios.map((s) => `- #${s.id}: ${s.title}`).join("\n") : "Belum ada scenario.",
         "",
         "# Top L1 atoms",
         recall.atoms.length ? recall.atoms.map((a) => `- #${a.id}: ${a.text}`).join("\n") : "Belum ada memory atom.",
@@ -85,7 +85,7 @@ export function createTelegramBot(deps: BotDeps) {
       userId,
     });
     await ctx.reply("Running memory pipeline L1→L2→L3 untuk user ini...");
-    const result = await deps.memory.runMaintenanceForUser(userId, deps.llm, true);
+    const result = await deps.memory.runMaintenanceForUser(userId, true);
     await ctx.reply(`Done. L1 created=${result.l1Created}, L2 scenario=${result.l2ScenarioId ?? "none"}, L3 updated=${result.personaUpdated}`);
   });
 

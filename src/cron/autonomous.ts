@@ -4,7 +4,7 @@ import type { Database } from "bun:sqlite";
 import { config } from "../config";
 import type { LlmProvider } from "../agent/types";
 import { runReactAgent } from "../agent/react-agent";
-import type { MemoryStore } from "../memory/store";
+import type { MemoryService } from "../memory/core/service";
 import type { ToolRegistry } from "../tools/registry";
 import { splitTelegramMessage, truncateText } from "../utils/text";
 import { unixNow } from "../utils/time";
@@ -12,7 +12,7 @@ import { unixNow } from "../utils/time";
 export type AutonomousDeps = {
   db: Database;
   bot: Bot;
-  memory: MemoryStore;
+  memory: MemoryService;
   registry: ToolRegistry;
   llm: LlmProvider;
 };
@@ -101,7 +101,7 @@ export function startAutonomousLoop(deps: AutonomousDeps) {
   console.log(`Autonomous loop scheduled from .env AUTONOMOUS_CRON=${config.autonomous.cron}`);
 }
 
-export function startMemoryMaintenanceLoop(input: { db: Database; memory: MemoryStore; llm: LlmProvider }) {
+export function startMemoryMaintenanceLoop(input: { db: Database; memory: MemoryService; llm: LlmProvider }) {
   cron.schedule(config.memory.maintenanceCron, async () => {
     if (memoryBusy) {
       logCronEvent("memory-skip", { reason: "busy" });
@@ -116,7 +116,7 @@ export function startMemoryMaintenanceLoop(input: { db: Database; memory: Memory
       });
       for (const user of users) {
         try {
-          const result = await input.memory.runMaintenanceForUser(user.user_id, input.llm);
+          const result = await input.memory.runMaintenanceForUser(user.user_id);
           if (result.l1Created || result.l2ScenarioId || result.personaUpdated) {
             console.log(`Memory maintenance user=${user.user_id} L1=${result.l1Created} L2=${result.l2ScenarioId ?? "-"} L3=${result.personaUpdated}`);
           }

@@ -1,0 +1,976 @@
+import { mkdir, readFile } from "node:fs/promises";
+import { join, relative } from "node:path";
+import { nowIso } from "../../../utils/time";
+import { ftsQuery } from "../../../utils/text";
+import type { MemoryBackend } from "../../core/backend";
+import type {
+  ConversationTurn,
+  EventMeta,
+  InteractionEvent,
+  JsonValue,
+  LineageLink,
+  LineageSourceKind,
+  MemoryAtom,
+  MemoryRecallFallback,
+  MemoryScenario,
+  NewConversationTurn,
+  NewInteractionEvent,
+  NewLineageLink,
+  NewMemoryAtom,
+  NewMemoryScenario,
+  NewOffloadRef,
+  NewPersonaProfile,
+  NewTaskGraphNode,
+  OffloadRef,
+  PersonaProfile,
+  PipelineCheckpointValue,
+  TaskGraphNode,
+  UpsertMemoryAtomResult,
+} from "../../core/types";
+import { migrateSqliteMemory } from "./migrate";
+import { deserializeVector, embedTextToVector, ensureSqliteVecTable, isZeroVector, loadSqliteVec, serializeVector } from "./vec";
+import type { Database } from "bun:sqlite";
+
+type SqliteMemoryBackendOptions = {
+  dataDir: string;
+  refsDir: string;
+  canvasDir: string;
+  sqliteVecEnabled?: boolean;
+};
+
+const MAX_VECTOR_DISTANCE = 0.95;
+
+function parseJsonValue(raw: string): JsonValue {
+  return JSON.parse(raw) as JsonValue;
+}
+
+function parseEventMeta(raw: string): EventMeta {
+  return JSON.parse(raw) as EventMeta;
+}
+
+function parseNumberArray(raw: string): number[] {
+  const parsed = JSON.parse(raw) as unknown;
+  return Array.isArray(parsed) ? parsed.filter((value): value is number => typeof value === "number") : [];
+}
+
+function parseSearchTerms(query: string): string[] {
+  return query
+    .toLowerCase()
+    .replace(/[%_]/g, " ")
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function scenarioSearchScore(title: string, bodyMarkdown: string, terms: string[]): number {
+  if (terms.length === 0) return 0;
+
+  const titleText = title.toLowerCase();
+  const bodyText = bodyMarkdown.toLowerCase();
+  return terms.reduce((score, term) => {
+    let nextScore = score;
+    if (titleText.includes(term)) nextScore += 2;
+    if (bodyText.includes(term)) nextScore += 1;
+    return nextScore;
+  }, 0);
+}
+
+function serializeCheckpointValue(value: PipelineCheckpointValue): string {
+  return JSON.stringify(value);
+}
+
+function deserializeCheckpointValue(raw: string): PipelineCheckpointValue {
+  try {
+    return parseJsonValue(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function vectorDistance(left: Float32Array, right: Float32Array): number {
+  let sum = 0;
+  const size = Math.max(left.length, right.length);
+
+  for (let index = 0; index < size; index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    sum += delta * delta;
+  }
+
+  return Math.sqrt(sum);
+}
+
+export class SqliteMemoryBackend implements MemoryBackend {
+  private vecReady = false;
+
+  constructor(
+    private readonly db: Database,
+    private readonly options: SqliteMemoryBackendOptions,
+  ) {}
+
+  private indexMemoryAtomVector(atomId: number, embeddingJson: string): void {
+    if (!this.vecReady) {
+      return;
+    }
+
+    this.db.query(`DELETE FROM memory_atoms_vec WHERE rowid = ?`).run(atomId);
+    this.db.query(`INSERT INTO memory_atoms_vec(rowid, embedding) VALUES (?, ?)`).run(atomId, deserializeVector(embeddingJson));
+  }
+
+  private rebuildMemoryAtomVectorIndex(): void {
+    if (!this.vecReady) {
+      return;
+    }
+
+    const rows = this.db
+      .query(`SELECT atom_id, embedding_json FROM memory_atom_embeddings ORDER BY atom_id ASC`)
+      .all() as Array<{ atom_id: number; embedding_json: string }>;
+
+    this.db.exec(`DELETE FROM memory_atoms_vec`);
+    for (const row of rows) {
+      this.db.query(`INSERT INTO memory_atoms_vec(rowid, embedding) VALUES (?, ?)`).run(row.atom_id, deserializeVector(row.embedding_json));
+    }
+  }
+
+  async init(): Promise<void> {
+    migrateSqliteMemory(this.db);
+
+    if (!this.vecReady && this.options.sqliteVecEnabled !== false) {
+      loadSqliteVec(this.db);
+      ensureSqliteVecTable(this.db);
+      this.vecReady = true;
+      this.rebuildMemoryAtomVectorIndex();
+    }
+
+    await Promise.all([
+      mkdir(this.options.dataDir, { recursive: true }),
+      mkdir(this.options.refsDir, { recursive: true }),
+      mkdir(this.options.canvasDir, { recursive: true }),
+    ]);
+  }
+
+  async insertInteractionEvent(event: NewInteractionEvent): Promise<number> {
+    const createdAt = event.createdAt ?? nowIso();
+    const result = this.db
+      .query(`
+        INSERT INTO interaction_events (chat_id, user_id, type, content, tool_name, tool_call_id, offloaded, meta_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        event.chatId,
+        event.userId,
+        event.type,
+        event.content,
+        event.toolName ?? null,
+        event.toolCallId ?? null,
+        event.offloaded ? 1 : 0,
+        JSON.stringify(event.meta ?? {}),
+        createdAt,
+      );
+
+    return Number(result.lastInsertRowid);
+  }
+
+  async insertConversationTurn(turn: NewConversationTurn): Promise<number> {
+    const createdAt = turn.createdAt ?? nowIso();
+    const result = this.db
+      .query(`
+        INSERT INTO conversations (chat_id, user_id, role, content, meta_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(turn.chatId, turn.userId, turn.role, turn.content, JSON.stringify(turn.meta ?? {}), createdAt);
+
+    const id = Number(result.lastInsertRowid);
+    this.db
+      .query(`INSERT INTO conversation_fts (content, conversation_id, chat_id, user_id) VALUES (?, ?, ?, ?)`)
+      .run(turn.content, String(id), turn.chatId, turn.userId);
+
+    return id;
+  }
+
+  async listInteractionEvents(userId: string, chatId: string, limit: number): Promise<InteractionEvent[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, type, content, tool_name, tool_call_id, offloaded, meta_json, created_at
+        FROM interaction_events
+        WHERE user_id = ? AND chat_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      `)
+      .all(userId, chatId, limit) as Array<{
+      id: number;
+      chat_id: string;
+      user_id: string;
+      type: InteractionEvent["type"];
+      content: string;
+      tool_name: string | null;
+      tool_call_id: string | null;
+      offloaded: number;
+      meta_json: string;
+      created_at: string;
+    }>;
+
+    return rows.reverse().map((row) => ({
+      id: row.id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      type: row.type,
+      content: row.content,
+      toolName: row.tool_name ?? undefined,
+      toolCallId: row.tool_call_id ?? undefined,
+      offloaded: Boolean(row.offloaded),
+      meta: parseEventMeta(row.meta_json),
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listConversationTurns(userId: string, chatId: string, limit: number): Promise<ConversationTurn[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, role, content, meta_json, created_at
+        FROM conversations
+        WHERE user_id = ? AND chat_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      `)
+      .all(userId, chatId, limit) as Array<{
+      id: number;
+      chat_id: string;
+      user_id: string;
+      role: ConversationTurn["role"];
+      content: string;
+      meta_json: string;
+      created_at: string;
+    }>;
+
+    return rows.reverse().map((row) => ({
+      id: row.id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      role: row.role,
+      content: row.content,
+      meta: parseEventMeta(row.meta_json),
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listPendingConversationEvidence(userId: string, afterConversationId: number, limit: number): Promise<ConversationTurn[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, role, content, meta_json, created_at
+        FROM conversations
+        WHERE user_id = ? AND id > ? AND role IN ('user', 'assistant')
+        ORDER BY id ASC
+        LIMIT ?
+      `)
+      .all(userId, afterConversationId, limit) as Array<{
+      id: number;
+      chat_id: string;
+      user_id: string;
+      role: ConversationTurn["role"];
+      content: string;
+      meta_json: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      role: row.role,
+      content: row.content,
+      meta: parseEventMeta(row.meta_json),
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listMemoryAtoms(userId: string, limit: number): Promise<MemoryAtom[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at
+        FROM memory_atoms
+        WHERE user_id = ?
+        ORDER BY importance DESC, updated_at DESC, id DESC
+        LIMIT ?
+      `)
+      .all(userId, limit) as Array<{
+      id: number;
+      user_id: string;
+      text: string;
+      importance: number;
+      source_turn_ids_json: string;
+      source_layer: MemoryAtom["sourceLayer"];
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      text: row.text,
+      importance: row.importance,
+      sourceConversationIds: parseNumberArray(row.source_turn_ids_json),
+      sourceLayer: row.source_layer,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  async countMemoryAtoms(userId: string): Promise<number> {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS count FROM memory_atoms WHERE user_id = ?`)
+      .get(userId) as { count: number } | null;
+
+    return row?.count ?? 0;
+  }
+
+  async searchMemoryAtoms(userId: string, query: string, limit: number): Promise<MemoryAtom[]> {
+    const fts = ftsQuery(query);
+    if (!fts) {
+      return this.listMemoryAtoms(userId, limit);
+    }
+
+    const rows = this.db
+      .query(`
+        SELECT m.id, m.user_id, m.text, m.importance, m.source_turn_ids_json, m.source_layer, m.created_at, m.updated_at
+        FROM memory_atoms_fts f
+        JOIN memory_atoms m ON m.id = CAST(f.atom_id AS INTEGER)
+        WHERE memory_atoms_fts MATCH ? AND f.user_id = ?
+        ORDER BY m.importance DESC, m.updated_at DESC, m.id DESC
+        LIMIT ?
+      `)
+      .all(fts, userId, limit) as Array<{
+      id: number;
+      user_id: string;
+      text: string;
+      importance: number;
+      source_turn_ids_json: string;
+      source_layer: MemoryAtom["sourceLayer"];
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      text: row.text,
+      importance: row.importance,
+      sourceConversationIds: parseNumberArray(row.source_turn_ids_json),
+      sourceLayer: row.source_layer,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  async searchMemoryAtomsByVector(userId: string, query: string, limit: number): Promise<MemoryAtom[]> {
+    if (!this.vecReady || limit <= 0) {
+      return [];
+    }
+
+    const vector = embedTextToVector(query);
+    if (isZeroVector(vector)) {
+      return [];
+    }
+
+    const rows = this.db
+      .query(`
+        SELECT m.id, m.user_id, m.text, m.importance, m.source_turn_ids_json, m.source_layer, m.created_at, m.updated_at, e.embedding_json
+        FROM memory_atom_embeddings e
+        JOIN memory_atoms m ON m.id = e.atom_id
+        WHERE m.user_id = ?
+      `)
+      .all(userId) as Array<{
+      id: number;
+      user_id: string;
+      text: string;
+      importance: number;
+      source_turn_ids_json: string;
+      source_layer: MemoryAtom["sourceLayer"];
+      created_at: string;
+      updated_at: string;
+      embedding_json: string;
+    }>;
+
+    return rows
+      .map((row) => ({
+        row,
+        distance: vectorDistance(vector, deserializeVector(row.embedding_json)),
+      }))
+      .filter(({ distance }) => distance <= MAX_VECTOR_DISTANCE)
+      .sort((left, right) => {
+        return left.distance - right.distance
+          || right.row.importance - left.row.importance
+          || right.row.updated_at.localeCompare(left.row.updated_at)
+          || right.row.id - left.row.id;
+      })
+      .slice(0, limit)
+      .map(({ row }) => ({
+        id: row.id,
+        userId: row.user_id,
+        text: row.text,
+        importance: row.importance,
+        sourceConversationIds: parseNumberArray(row.source_turn_ids_json),
+        sourceLayer: row.source_layer,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+  }
+
+  async listExistingMemoryAtomIds(userId: string, atomIds: number[]): Promise<Set<number>> {
+    if (atomIds.length === 0) {
+      return new Set();
+    }
+
+    const placeholders = atomIds.map(() => "?").join(", ");
+    const rows = this.db
+      .query(`
+        SELECT id
+        FROM memory_atoms
+        WHERE user_id = ? AND id IN (${placeholders})
+      `)
+      .all(userId, ...atomIds) as Array<{ id: number }>;
+
+    return new Set(rows.map((row) => row.id));
+  }
+
+  async upsertMemoryAtom(atom: NewMemoryAtom): Promise<UpsertMemoryAtomResult> {
+    const text = atom.text.trim();
+    if (!text) {
+      throw new Error("Memory atom text cannot be empty");
+    }
+
+    const existing = this.db
+      .query(`
+        SELECT id, user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at
+        FROM memory_atoms
+        WHERE user_id = ? AND text = ?
+      `)
+      .get(atom.userId, text) as {
+      id: number;
+      user_id: string;
+      text: string;
+      importance: number;
+      source_turn_ids_json: string;
+      source_layer: MemoryAtom["sourceLayer"];
+      created_at: string;
+      updated_at: string;
+    } | null;
+
+    const sourceConversationIds = atom.sourceConversationIds ?? [];
+    const sourceLayer = atom.sourceLayer ?? "L1";
+    const importance = atom.importance ?? 3;
+    const updatedAt = nowIso();
+    const embeddingJson = serializeVector(embedTextToVector(text));
+
+    if (existing) {
+      this.db
+        .query(`
+          UPDATE memory_atoms
+          SET importance = ?, source_turn_ids_json = ?, source_layer = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(importance, JSON.stringify(sourceConversationIds), sourceLayer, updatedAt, existing.id);
+      this.db
+        .query(`
+          INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(atom_id) DO UPDATE SET
+            user_id = excluded.user_id,
+            embedding_json = excluded.embedding_json,
+            updated_at = excluded.updated_at
+        `)
+        .run(existing.id, atom.userId, embeddingJson, updatedAt);
+      this.indexMemoryAtomVector(existing.id, embeddingJson);
+
+      return {
+        created: false,
+        atom: {
+          id: existing.id,
+          userId: existing.user_id,
+          text: existing.text,
+          importance,
+          sourceConversationIds,
+          sourceLayer,
+          createdAt: existing.created_at,
+          updatedAt,
+        },
+      };
+    }
+
+    const createdAt = updatedAt;
+    const result = this.db
+      .query(`
+        INSERT INTO memory_atoms (user_id, text, importance, source_turn_ids_json, source_layer, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(atom.userId, text, importance, JSON.stringify(sourceConversationIds), sourceLayer, createdAt, updatedAt);
+
+    const id = Number(result.lastInsertRowid);
+    this.db.query(`INSERT INTO memory_atoms_fts (text, atom_id, user_id) VALUES (?, ?, ?)`).run(text, String(id), atom.userId);
+    this.db
+      .query(`
+        INSERT INTO memory_atom_embeddings (atom_id, user_id, embedding_json, updated_at)
+        VALUES (?, ?, ?, ?)
+      `)
+      .run(id, atom.userId, embeddingJson, updatedAt);
+    this.indexMemoryAtomVector(id, embeddingJson);
+
+    return {
+      created: true,
+      atom: {
+        id,
+        userId: atom.userId,
+        text,
+        importance,
+        sourceConversationIds,
+        sourceLayer,
+        createdAt,
+        updatedAt,
+      },
+    };
+  }
+
+  async insertMemoryScenario(scenario: NewMemoryScenario): Promise<number> {
+    const createdAt = nowIso();
+    const result = this.db
+      .query(`
+        INSERT INTO memory_scenarios (user_id, title, body_markdown, atom_ids_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(scenario.userId, scenario.title, scenario.bodyMarkdown, JSON.stringify(scenario.atomIds), createdAt, createdAt);
+
+    return Number(result.lastInsertRowid);
+  }
+
+  async countMemoryScenarios(userId: string): Promise<number> {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS count FROM memory_scenarios WHERE user_id = ?`)
+      .get(userId) as { count: number } | null;
+
+    return row?.count ?? 0;
+  }
+
+  async searchMemoryScenarios(userId: string, query: string, limit: number): Promise<MemoryScenario[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, user_id, title, body_markdown, atom_ids_json, created_at, updated_at
+        FROM memory_scenarios
+        WHERE user_id = ?
+        ORDER BY updated_at DESC, id DESC
+      `)
+      .all(userId) as Array<{
+      id: number;
+      user_id: string;
+      title: string;
+      body_markdown: string;
+      atom_ids_json: string;
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    const terms = parseSearchTerms(query);
+    return rows
+      .map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        title: row.title,
+        bodyMarkdown: row.body_markdown,
+        atomIds: parseNumberArray(row.atom_ids_json),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        score: scenarioSearchScore(row.title, row.body_markdown, terms),
+      }))
+      .filter((row) => terms.length === 0 || row.score > 0)
+      .sort((left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt) || right.id - left.id)
+      .slice(0, limit)
+      .map(({ score: _score, ...scenario }) => scenario);
+  }
+
+  async getPersona(userId: string): Promise<PersonaProfile | undefined> {
+    const row = this.db
+      .query(`
+        SELECT user_id, markdown, source_scenario_ids_json, updated_at
+        FROM personas
+        WHERE user_id = ?
+      `)
+      .get(userId) as {
+      user_id: string;
+      markdown: string;
+      source_scenario_ids_json: string;
+      updated_at: string;
+    } | null;
+
+    return row
+      ? {
+          userId: row.user_id,
+          markdown: row.markdown,
+          sourceScenarioIds: parseNumberArray(row.source_scenario_ids_json),
+          updatedAt: row.updated_at,
+        }
+      : undefined;
+  }
+
+  async upsertPersona(profile: NewPersonaProfile): Promise<PersonaProfile> {
+    const updatedAt = nowIso();
+    this.db
+      .query(`
+        INSERT INTO personas (user_id, markdown, source_scenario_ids_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          markdown = excluded.markdown,
+          source_scenario_ids_json = excluded.source_scenario_ids_json,
+          updated_at = excluded.updated_at
+      `)
+      .run(profile.userId, profile.markdown, JSON.stringify(profile.sourceScenarioIds), updatedAt);
+
+    return {
+      userId: profile.userId,
+      markdown: profile.markdown,
+      sourceScenarioIds: profile.sourceScenarioIds,
+      updatedAt,
+    };
+  }
+
+  async insertLineageLink(link: NewLineageLink): Promise<number> {
+    const createdAt = nowIso();
+    const result = this.db
+      .query(`
+        INSERT OR IGNORE INTO lineage_links (user_id, source_kind, source_id, target_kind, target_id, link_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(link.userId, link.sourceKind, link.sourceId, link.targetKind, link.targetId, link.linkType, createdAt);
+
+    if (Number(result.changes) === 0) {
+      const existing = this.db
+        .query(`
+          SELECT id FROM lineage_links
+          WHERE user_id = ? AND source_kind = ? AND source_id = ? AND target_kind = ? AND target_id = ? AND link_type = ?
+        `)
+        .get(link.userId, link.sourceKind, link.sourceId, link.targetKind, link.targetId, link.linkType) as { id: number } | null;
+      return existing?.id ?? 0;
+    }
+
+    return Number(result.lastInsertRowid);
+  }
+
+  async listLineageTargets(userId: string, sourceKind: LineageSourceKind, sourceId: string): Promise<LineageLink[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, user_id, source_kind, source_id, target_kind, target_id, link_type, created_at
+        FROM lineage_links
+        WHERE user_id = ? AND source_kind = ? AND source_id = ?
+        ORDER BY id ASC
+      `)
+      .all(userId, sourceKind, sourceId) as Array<{
+      id: number;
+      user_id: string;
+      source_kind: LineageLink["sourceKind"];
+      source_id: string;
+      target_kind: LineageLink["targetKind"];
+      target_id: string;
+      link_type: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      sourceKind: row.source_kind,
+      sourceId: row.source_id,
+      targetKind: row.target_kind,
+      targetId: row.target_id,
+      linkType: row.link_type,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async getFallbackChain(userId: string, missingKind: LineageSourceKind, missingId: string): Promise<MemoryRecallFallback[]> {
+    const links = await this.listLineageTargets(userId, missingKind, missingId);
+    return links.map((link) => ({
+      missingKind: link.sourceKind,
+      missingId: link.sourceId,
+      fallbackKind: link.targetKind,
+      fallbackId: link.targetId,
+      linkType: link.linkType,
+    }));
+  }
+
+  async searchConversationTurns(userId: string, query: string, limit: number): Promise<ConversationTurn[]> {
+    const fts = ftsQuery(query);
+    if (!fts) {
+      return [];
+    }
+
+    const rows = this.db
+      .query(`
+        SELECT c.id, c.chat_id, c.user_id, c.role, c.content, c.meta_json, c.created_at
+        FROM conversation_fts f
+        JOIN conversations c ON c.id = CAST(f.conversation_id AS INTEGER)
+        WHERE conversation_fts MATCH ? AND f.user_id = ?
+        ORDER BY c.id DESC
+        LIMIT ?
+      `)
+      .all(fts, userId, limit) as Array<{
+      id: number;
+      chat_id: string;
+      user_id: string;
+      role: ConversationTurn["role"];
+      content: string;
+      meta_json: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      role: row.role,
+      content: row.content,
+      meta: parseEventMeta(row.meta_json),
+      createdAt: row.created_at,
+    }));
+  }
+
+  async countConversationTurns(userId: string): Promise<number> {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS count FROM conversations WHERE user_id = ?`)
+      .get(userId) as { count: number } | null;
+
+    return row?.count ?? 0;
+  }
+
+  async getTaskCanvas(chatId: string): Promise<string | undefined> {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS count FROM memory_task_nodes WHERE chat_id = ?`)
+      .get(chatId) as { count: number } | null;
+
+    if ((row?.count ?? 0) === 0) {
+      return undefined;
+    }
+
+    try {
+      return await readFile(join(this.options.canvasDir, `${chatId}.mmd`), "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+
+  async getOffloadPath(chatId: string, nodeId: string): Promise<{ absolutePath: string; relativePath: string }> {
+    const absolutePath = join(this.options.refsDir, chatId, `${nodeId}.md`);
+    return {
+      absolutePath,
+      relativePath: relative(this.options.dataDir, absolutePath).replace(/\\/g, "/"),
+    };
+  }
+
+  async getTaskCanvasPath(chatId: string): Promise<string> {
+    return join(this.options.canvasDir, `${chatId}.mmd`);
+  }
+
+  async findOffloadRefByNodeId(userId: string, nodeId: string): Promise<OffloadRef | undefined> {
+    const row = this.db
+      .query(`
+        SELECT id, chat_id, user_id, node_id, kind, title, file_path, summary, created_at
+        FROM memory_offload_refs
+        WHERE user_id = ? AND node_id = ?
+      `)
+      .get(userId, nodeId) as {
+      id: number;
+      chat_id: string;
+      user_id: string;
+      node_id: string;
+      kind: string;
+      title: string;
+      file_path: string;
+      summary: string;
+      created_at: string;
+    } | null;
+
+    return row
+      ? {
+          id: row.id,
+          chatId: row.chat_id,
+          userId: row.user_id,
+          nodeId: row.node_id,
+          kind: row.kind,
+          title: row.title,
+          filePath: row.file_path,
+          summary: row.summary,
+          createdAt: row.created_at,
+        }
+      : undefined;
+  }
+
+  async findOffloadRefByFilePath(userId: string, filePath: string): Promise<OffloadRef | undefined> {
+    const row = this.db
+      .query(`
+        SELECT id, chat_id, user_id, node_id, kind, title, file_path, summary, created_at
+        FROM memory_offload_refs
+        WHERE user_id = ? AND file_path = ?
+      `)
+      .get(userId, filePath) as {
+      id: number;
+      chat_id: string;
+      user_id: string;
+      node_id: string;
+      kind: string;
+      title: string;
+      file_path: string;
+      summary: string;
+      created_at: string;
+    } | null;
+
+    return row
+      ? {
+          id: row.id,
+          chatId: row.chat_id,
+          userId: row.user_id,
+          nodeId: row.node_id,
+          kind: row.kind,
+          title: row.title,
+          filePath: row.file_path,
+          summary: row.summary,
+          createdAt: row.created_at,
+        }
+      : undefined;
+  }
+
+  async insertOffloadRef(ref: NewOffloadRef): Promise<number> {
+    const createdAt = ref.createdAt ?? nowIso();
+    const result = this.db
+      .query(`
+        INSERT INTO memory_offload_refs (chat_id, user_id, node_id, kind, title, file_path, summary, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(ref.chatId, ref.userId, ref.nodeId, ref.kind, ref.title, ref.filePath, ref.summary, createdAt);
+
+    return Number(result.lastInsertRowid);
+  }
+
+  async countOffloadRefs(userId: string): Promise<number> {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS count FROM memory_offload_refs WHERE user_id = ?`)
+      .get(userId) as { count: number } | null;
+
+    return row?.count ?? 0;
+  }
+
+  async insertTaskGraphNode(node: NewTaskGraphNode): Promise<number> {
+    const createdAt = node.createdAt ?? nowIso();
+    const result = this.db
+      .query(`
+        INSERT INTO memory_task_nodes (chat_id, user_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        node.chatId,
+        node.userId,
+        node.nodeId,
+        node.toolName ?? null,
+        JSON.stringify(node.args ?? {}),
+        node.summary,
+        node.resultRef ?? null,
+        node.status,
+        createdAt,
+      );
+
+    return Number(result.lastInsertRowid);
+  }
+
+  async insertOffloadRefWithTaskGraphNode(ref: NewOffloadRef, node: NewTaskGraphNode): Promise<void> {
+    const insertBoth = this.db.transaction((nextRef: NewOffloadRef, nextNode: NewTaskGraphNode) => {
+      const refCreatedAt = nextRef.createdAt ?? nowIso();
+      const nodeCreatedAt = nextNode.createdAt ?? nowIso();
+
+      this.db
+        .query(`
+          INSERT INTO memory_offload_refs (chat_id, user_id, node_id, kind, title, file_path, summary, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(nextRef.chatId, nextRef.userId, nextRef.nodeId, nextRef.kind, nextRef.title, nextRef.filePath, nextRef.summary, refCreatedAt);
+
+      this.db
+        .query(`
+          INSERT INTO memory_task_nodes (chat_id, user_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          nextNode.chatId,
+          nextNode.userId,
+          nextNode.nodeId,
+          nextNode.toolName ?? null,
+          JSON.stringify(nextNode.args ?? {}),
+          nextNode.summary,
+          nextNode.resultRef ?? null,
+          nextNode.status,
+          nodeCreatedAt,
+        );
+    });
+
+    insertBoth(ref, node);
+  }
+
+  async deleteOffloadMetadata(nodeId: string): Promise<void> {
+    const deleteBoth = this.db.transaction((nextNodeId: string) => {
+      this.db.query(`DELETE FROM memory_task_nodes WHERE node_id = ?`).run(nextNodeId);
+      this.db.query(`DELETE FROM memory_offload_refs WHERE node_id = ?`).run(nextNodeId);
+    });
+
+    deleteBoth(nodeId);
+  }
+
+  async listTaskGraphNodes(chatId: string, limit: number): Promise<TaskGraphNode[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, node_id, tool_name, args_json, summary, result_ref, status, created_at
+        FROM memory_task_nodes
+        WHERE chat_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      `)
+      .all(chatId, limit) as Array<{
+      id: number;
+      chat_id: string;
+      user_id: string;
+      node_id: string;
+      tool_name: string | null;
+      args_json: string;
+      summary: string;
+      result_ref: string | null;
+      status: string;
+      created_at: string;
+    }>;
+
+    return rows.reverse().map((row) => ({
+      id: row.id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      nodeId: row.node_id,
+      toolName: row.tool_name ?? undefined,
+      args: parseEventMeta(row.args_json),
+      summary: row.summary,
+      resultRef: row.result_ref ?? undefined,
+      status: row.status,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async getCheckpoint(userId: string, key: string): Promise<PipelineCheckpointValue | undefined> {
+    const row = this.db
+      .query(`SELECT value FROM pipeline_checkpoints WHERE user_id = ? AND key = ?`)
+      .get(userId, key) as { value: string } | null;
+
+    return row ? deserializeCheckpointValue(row.value) : undefined;
+  }
+
+  async setCheckpoint(userId: string, key: string, value: PipelineCheckpointValue): Promise<void> {
+    const updatedAt = nowIso();
+    this.db
+      .query(`
+        INSERT INTO pipeline_checkpoints (user_id, key, value, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(userId, key, serializeCheckpointValue(value), updatedAt);
+  }
+}

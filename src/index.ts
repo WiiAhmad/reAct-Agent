@@ -1,7 +1,7 @@
 import { assertRuntimeConfig, config, getRuntimeConfigSummary } from "./config";
 import { db, initDb } from "./db";
 import { createLlmProvider } from "./agent/providers";
-import { MemoryStore } from "./memory/store";
+import { createMemoryService } from "./memory/integration/factory";
 import { ToolRegistry } from "./tools/registry";
 import { createLocalTools } from "./tools/local";
 import { loadMcpConfig } from "./mcp/config";
@@ -21,7 +21,22 @@ async function main() {
   console.log("Runtime config", getRuntimeConfigSummary());
 
   const llm = createLlmProvider();
-  const memory = new MemoryStore(db);
+  const memory = await createMemoryService(db, llm, {
+    storage: {
+      dataDir: config.storage.dataDir,
+      memoryRefsDir: config.storage.memoryRefsDir,
+      memoryCanvasDir: config.storage.memoryCanvasDir,
+      memoryJsonlExportDir: config.storage.memoryJsonlExportDir,
+    },
+    memory: {
+      maintenanceCron: config.memory.maintenanceCron,
+      offloadEnabled: config.memory.offloadEnabled,
+      offloadMinChars: config.memory.offloadMinChars,
+      offloadSummaryChars: config.memory.offloadSummaryChars,
+      sqliteVecEnabled: config.memory.sqliteVecEnabled,
+      jsonlExportEnabled: config.memory.jsonlExportEnabled,
+    },
+  });
   const registry = new ToolRegistry(db);
   const mcpManager = new McpManager();
 

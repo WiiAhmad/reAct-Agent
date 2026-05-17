@@ -1,6 +1,6 @@
 import type { Api } from "grammy";
-import type { MemoryStore } from "../memory/store";
-import type { RegisteredTool } from "./types";
+import type { MemoryServiceLike as MemoryService } from "../memory/core/service";
+import type { RegisteredTool, ToolContext } from "./types";
 import { truncateText } from "../utils/text";
 
 function asString(value: unknown, fallback = ""): string {
@@ -11,12 +11,24 @@ function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function createLocalTools(memory: MemoryStore, telegram?: Api): RegisteredTool[] {
+function scenarioBody(scenario: { body_markdown?: string; bodyMarkdown?: string }): string {
+  return scenario.body_markdown ?? scenario.bodyMarkdown ?? "";
+}
+
+function conversationCreatedAt(conversation: { created_at?: string; createdAt?: string }): string {
+  return conversation.created_at ?? conversation.createdAt ?? "";
+}
+
+function getMemory(memory: MemoryService, ctx: ToolContext): MemoryService {
+  return ctx.memory ?? memory;
+}
+
+export function createLocalTools(memory: MemoryService, telegram?: Api): RegisteredTool[] {
   return [
     {
       name: "tdai_memory_search",
       source: "local",
-      description: "TencentDB-Agent-Memory style search over L3 persona, L2 scenarios, L1 atoms, L0 evidence, and active task canvas.",
+      description: "Search the project-owned memory backend across L3 persona, L2 scenarios, L1 atoms, L0 evidence, and the active task canvas.",
       inputSchema: {
         type: "object",
         properties: {
@@ -29,12 +41,12 @@ export function createLocalTools(memory: MemoryStore, telegram?: Api): Registere
       async execute(args, ctx) {
         const query = asString(args.query);
         const maxResults = asNumber(args.maxResults, 5);
-        const recall = await memory.recall(ctx.userId, query, maxResults, ctx.chatId);
+        const recall = await getMemory(memory, ctx).recall(ctx.userId, query, maxResults, ctx.chatId);
         const parts = [];
         if (recall.persona) parts.push(`## L3 Persona\n${recall.persona}`);
-        if (recall.scenarios.length) parts.push(`## L2 Scenarios\n${recall.scenarios.map((s) => `### #${s.id} ${s.title}\n${truncateText(s.body_markdown, 1200)}`).join("\n\n")}`);
+        if (recall.scenarios.length) parts.push(`## L2 Scenarios\n${recall.scenarios.map((s) => `### #${s.id} ${s.title}\n${truncateText(scenarioBody(s), 1200)}`).join("\n\n")}`);
         if (recall.atoms.length) parts.push(`## L1 Atoms\n${recall.atoms.map((a) => `- atom_id=${a.id} importance=${a.importance}: ${a.text}`).join("\n")}`);
-        if (recall.conversations.length) parts.push(`## L0 Conversations\n${recall.conversations.map((c) => `- turn_id=${c.id} ${c.created_at} ${c.role}: ${truncateText(c.content, 500)}`).join("\n")}`);
+        if (recall.conversations.length) parts.push(`## L0 Conversations\n${recall.conversations.map((c) => `- turn_id=${c.id} ${conversationCreatedAt(c)} ${c.role}: ${truncateText(c.content, 500)}`).join("\n")}`);
         if (recall.taskCanvas) parts.push(`## Active Mermaid Canvas\n\`\`\`mermaid\n${truncateText(recall.taskCanvas, 1800)}\n\`\`\``);
         return parts.length ? parts.join("\n\n") : "No relevant memory found.";
       },
@@ -42,7 +54,7 @@ export function createLocalTools(memory: MemoryStore, telegram?: Api): Registere
     {
       name: "tdai_conversation_search",
       source: "local",
-      description: "TencentDB-Agent-Memory style search over raw L0 conversation history for exact evidence.",
+      description: "Search raw L0 conversation history in the project-owned memory backend for exact evidence.",
       inputSchema: {
         type: "object",
         properties: {
@@ -53,7 +65,7 @@ export function createLocalTools(memory: MemoryStore, telegram?: Api): Registere
         additionalProperties: false,
       },
       async execute(args, ctx) {
-        return memory.searchConversations(ctx.userId, asString(args.query), asNumber(args.limit, 5));
+        return getMemory(memory, ctx).searchConversations(ctx.userId, asString(args.query), asNumber(args.limit, 5));
       },
     },
     {
@@ -69,20 +81,20 @@ export function createLocalTools(memory: MemoryStore, telegram?: Api): Registere
         additionalProperties: false,
       },
       async execute(args, ctx) {
-        return memory.readContextRef({ userId: ctx.userId, nodeId: asString(args.node_id), resultRef: asString(args.result_ref) });
+        return getMemory(memory, ctx).readContextRef({ userId: ctx.userId, nodeId: asString(args.node_id), resultRef: asString(args.result_ref) });
       },
     },
     {
       name: "tdai_memory_status",
       source: "local",
-      description: "Inspect local TencentDB-Agent-Memory style adapter status, layer counts, cron settings, and offload state.",
+      description: "Inspect the project-owned memory backend status, layer counts, cron settings, and offload state.",
       inputSchema: {
         type: "object",
         properties: {},
         additionalProperties: false,
       },
       async execute(_args, ctx) {
-        return memory.memoryStatus(ctx.userId, ctx.chatId);
+        return getMemory(memory, ctx).memoryStatus(ctx.userId, ctx.chatId);
       },
     },
     {
@@ -99,7 +111,7 @@ export function createLocalTools(memory: MemoryStore, telegram?: Api): Registere
         additionalProperties: false,
       },
       async execute(args, ctx) {
-        const id = memory.addAtom({
+        const id = await getMemory(memory, ctx).saveMemory({
           userId: ctx.userId,
           text: asString(args.text),
           importance: asNumber(args.importance, 3),

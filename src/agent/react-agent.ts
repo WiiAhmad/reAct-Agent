@@ -1,5 +1,6 @@
 import { config } from "../config";
-import type { MemoryStore } from "../memory/store";
+import type { MemoryService } from "../memory/core/service";
+import type { EventMeta } from "../memory/core/types";
 import { truncateText } from "../utils/text";
 import type { ToolRegistry } from "../tools/registry";
 import type { AgentMessage, LlmProvider, ToolCall } from "./types";
@@ -8,19 +9,23 @@ export type RunAgentInput = {
   chatId: string;
   userId: string;
   input: string;
-  memory: MemoryStore;
+  memory: MemoryService;
   registry: ToolRegistry;
   llm: LlmProvider;
   mode?: "chat" | "autonomous";
 };
 
-function formatRecall(recall: Awaited<ReturnType<MemoryStore["recall"]>>): string {
+function scenarioBody(scenario: { body_markdown?: string; bodyMarkdown?: string }): string {
+  return scenario.body_markdown ?? scenario.bodyMarkdown ?? "";
+}
+
+function formatRecall(recall: Awaited<ReturnType<MemoryService["recall"]>>): string {
   const sections: string[] = [];
   if (recall.persona) sections.push(`## L3 Persona\n${recall.persona}`);
   if (recall.scenarios.length) {
     sections.push(
       `## L2 Scenarios\n${recall.scenarios
-        .map((s) => `### Scenario #${s.id}: ${s.title}\n${truncateText(s.body_markdown, 1600)}${s.file_path ? `\nsource_file=${s.file_path}` : ""}`)
+        .map((s) => `### Scenario #${s.id}: ${s.title}\n${truncateText(scenarioBody(s), 1600)}`)
         .join("\n\n")}`,
     );
   }
@@ -48,6 +53,10 @@ function logAgentEvent(event: string, details: Record<string, unknown>) {
   console.log(`[agent:${event}]`, details);
 }
 
+function asEventMeta(value: Record<string, unknown>): EventMeta {
+  return JSON.parse(JSON.stringify(value)) as EventMeta;
+}
+
 export async function runReactAgent(input: RunAgentInput): Promise<string> {
   logAgentEvent("start", {
     mode: input.mode ?? "chat",
@@ -56,16 +65,15 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     input: truncateText(input.input, 200),
   });
 
-  await input.memory.logTurn({
+  await input.memory.logUserMessage({
     chatId: input.chatId,
     userId: input.userId,
-    role: "user",
     content: input.input,
-    meta: { mode: input.mode ?? "chat" },
+    mode: input.mode ?? "chat",
   });
 
   const [recent, recall] = await Promise.all([
-    input.memory.recentMessages(input.chatId, config.agent.maxRecentMessages),
+    input.memory.recentMessages(input.userId, input.chatId, config.agent.maxRecentMessages),
     input.memory.recall(input.userId, input.input, config.memory.recallMaxResults, input.chatId),
   ]);
 
@@ -82,7 +90,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     },
   });
 
-  const system = `You are a Telegram AI agent running on grammY + MCP tools + TencentDB-Agent-Memory style local memory.
+  const system = `You are a Telegram AI agent running on grammY + MCP tools + a project-owned local memory backend.
 
 Use a ReAct-style loop internally:
 1. Understand the user goal.
@@ -114,7 +122,6 @@ Rules:
     ...recent
       .filter((m) => m.role === "user" || m.role === "assistant")
       .map((m) => ({ role: m.role, content: m.content }) as AgentMessage),
-    { role: "user", content: input.input },
   ];
 
   const tools = input.registry.list();
@@ -142,10 +149,9 @@ Rules:
 
     if (response.toolCalls.length === 0) {
       const answer = response.content || "Saya belum bisa menghasilkan jawaban.";
-      await input.memory.logTurn({
+      await input.memory.logAssistantMessage({
         chatId: input.chatId,
         userId: input.userId,
-        role: "assistant",
         content: answer,
         meta: { mode: input.mode ?? "chat", tool_iterations: i },
       });
@@ -169,10 +175,11 @@ Rules:
         args: truncateText(JSON.stringify(call.arguments ?? {}), 200),
       });
 
-      await input.memory.logTurn({
+      await input.memory.logToolCall({
         chatId: input.chatId,
         userId: input.userId,
-        role: "tool",
+        toolName: call.name,
+        toolCallId: call.id,
         content: `CALL ${toolCallSummary(call)}`,
         meta: { tool_call_id: call.id, tool_name: call.name },
       });
@@ -187,7 +194,7 @@ Rules:
         chatId: input.chatId,
         userId: input.userId,
         toolName: call.name,
-        args: call.arguments ?? {},
+        args: asEventMeta(call.arguments ?? {}),
         rawResult,
       });
 
@@ -199,17 +206,19 @@ Rules:
         content: observation,
       });
 
-      await input.memory.logTurn({
+      await input.memory.logToolResult({
         chatId: input.chatId,
         userId: input.userId,
-        role: "tool",
+        toolName: call.name,
+        toolCallId: call.id,
         content: `RESULT ${call.name}${offload.offloaded ? ` offloaded node_id=${offload.nodeId} result_ref=${offload.resultRef}` : ""}:\n${observation}`,
+        offloaded: offload.offloaded,
         meta: {
           tool_call_id: call.id,
           tool_name: call.name,
           offloaded: offload.offloaded,
-          node_id: offload.nodeId,
-          result_ref: offload.resultRef,
+          ...(offload.nodeId ? { node_id: offload.nodeId } : {}),
+          ...(offload.resultRef ? { result_ref: offload.resultRef } : {}),
         },
       });
 
@@ -226,10 +235,9 @@ Rules:
   }
 
   const fallback = final || "Tool loop mencapai batas iterasi. Coba pecah request jadi lebih kecil.";
-  await input.memory.logTurn({
+  await input.memory.logAssistantMessage({
     chatId: input.chatId,
     userId: input.userId,
-    role: "assistant",
     content: fallback,
     meta: { mode: input.mode ?? "chat", stopped: "max_tool_iterations" },
   });

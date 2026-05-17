@@ -1,28 +1,40 @@
 import { Database } from "bun:sqlite";
+import { migrateSqliteMemory } from "../memory/backends/sqlite/migrate";
+
+function hasColumn(db: Database, tableName: string, columnName: string) {
+  const columns = db.query(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return columns.some((column) => column.name === columnName);
+}
 
 export function migrate(db: Database) {
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
+  migrateSqliteMemory(db);
 
-    CREATE TABLE IF NOT EXISTS conversations (
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tool_registry (
+      name TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      server_name TEXT,
+      original_name TEXT,
+      description TEXT NOT NULL,
+      input_schema_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS autonomous_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      meta_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL
+      prompt TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_run_at INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS conversation_fts USING fts5(
-      content,
-      conversation_id UNINDEXED,
-      chat_id UNINDEXED,
-      user_id UNINDEXED,
-      tokenize = 'unicode61'
-    );
-
+    -- Transitional compatibility schema for the current app runtime.
+    -- Task 2's dedicated SQLite memory migrator stays minimal while the project-owned
+    -- runtime keeps using these memory tables directly.
     CREATE TABLE IF NOT EXISTS memory_atoms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
@@ -31,7 +43,8 @@ export function migrate(db: Database) {
       source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
       source_layer TEXT NOT NULL DEFAULT 'L1',
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, text)
     );
 
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_atoms_fts USING fts5(
@@ -88,7 +101,7 @@ export function migrate(db: Database) {
       args_json TEXT NOT NULL DEFAULT '{}',
       summary TEXT NOT NULL,
       result_ref TEXT,
-      status TEXT NOT NULL DEFAULT 'ok',
+      status TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
 
@@ -100,37 +113,13 @@ export function migrate(db: Database) {
       details_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
-
-    CREATE TABLE IF NOT EXISTS tool_registry (
-      name TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      server_name TEXT,
-      original_name TEXT,
-      description TEXT NOT NULL,
-      input_schema_json TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS autonomous_jobs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      chat_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      prompt TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      last_run_at INTEGER,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
   `);
 
-  // Lightweight migrations for older generated copies.
-  const columns = db.query(`PRAGMA table_info(memory_atoms)`).all() as Array<{ name: string }>;
-  if (!columns.some((c) => c.name === "source_layer")) {
-    db.exec(`ALTER TABLE memory_atoms ADD COLUMN source_layer TEXT NOT NULL DEFAULT 'L1';`);
+  if (!hasColumn(db, "memory_atoms", "source_layer")) {
+    db.exec(`ALTER TABLE memory_atoms ADD COLUMN source_layer TEXT NOT NULL DEFAULT 'L1'`);
   }
-  const scenarioCols = db.query(`PRAGMA table_info(memory_scenarios)`).all() as Array<{ name: string }>;
-  if (!scenarioCols.some((c) => c.name === "file_path")) {
-    db.exec(`ALTER TABLE memory_scenarios ADD COLUMN file_path TEXT;`);
+
+  if (!hasColumn(db, "memory_scenarios", "file_path")) {
+    db.exec(`ALTER TABLE memory_scenarios ADD COLUMN file_path TEXT`);
   }
 }

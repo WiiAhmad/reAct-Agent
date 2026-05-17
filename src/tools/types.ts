@@ -1,11 +1,11 @@
 import type { Api } from "grammy";
 import type { ToolDefinition } from "../agent/types";
-import type { MemoryStore } from "../memory/store";
+import type { MemoryServiceLike as MemoryService } from "../memory/core/service";
 
 export type ToolContext = {
   chatId: string;
   userId: string;
-  memory: MemoryStore;
+  memory: MemoryService;
   telegram?: Api;
 };
 

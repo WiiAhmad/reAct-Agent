@@ -6,20 +6,21 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
+    "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
     "db:reset": "rm -f data/agent.db data/agent.db-shm data/agent.db-wal && bun src/index.ts --migrate-only",
-    "vendor:tencent-memory": "bun scripts/vendor-tencentdb-agent-memory.ts",
-    "vendor:tencent-memory:force": "bun scripts/vendor-tencentdb-agent-memory.ts --force",
     "memory:inspect": "bun scripts/inspect-memory.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
+    "@grammyjs/conversations": "^2.1.1",
     "@modelcontextprotocol/sdk": "latest",
     "grammy": "latest",
     "node-cron": "latest",
     "openai": "latest",
-    "zod": "latest",
-    "yaml": "latest"
+    "sqlite-vec": "latest",
+    "yaml": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
