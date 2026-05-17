@@ -1,149 +1,119 @@
-# grammY + OpenAI/Claude Agent on Bun
+# grammY Telegram Agent on Bun
 
-Boilerplate Telegram AI agent dengan:
+A Telegram AI agent built with Bun, grammY, and `@grammyjs/conversations`.
 
-- Bun runtime
-- grammY Telegram bot
-- OpenAI / OpenAI-compatible provider
-- Claude native provider
-- SQLite lokal via `bun:sqlite`
-- JSONL chat history sebagai L0 evidence trail
-- project-owned memory backend: L0 conversation → L1 atom → L2 scenario → L3 persona
-- Short-term context offload: heavy tool results masuk `data/memory/refs/*.md`, agent melihat Mermaid canvas ringkas
-- ReAct-style tool loop
-- `node-cron` autonomous jobs setiap 10 menit dari `.env`
+The runtime is now menu-driven. Public commands are only:
 
-## 1. Install
+- `/start`
+- `/menu`
+- `/help`
+
+Everything else happens through Telegram menus, inline buttons, and structured conversations.
+
+## What this project does
+
+- runs on Bun
+- serves a Telegram bot with grammY
+- uses `@grammyjs/conversations` for multi-step UI flows
+- routes normal chat messages through a ReAct-style agent loop
+- stores memory in a project-owned backend
+- schedules autonomous jobs from Telegram and dispatches them through the unified scheduler
+- exposes an internal current datetime tool for accurate timestamp-aware reasoning
+
+## Telegram UX
+
+### `/start`
+
+First-contact entry point. It welcomes the user and offers navigation into the menu or help.
+
+### `/menu`
+
+Opens the main menu. The menu is button-first and keeps the rest of the runtime behind structured flows.
+
+Typical menu sections:
+
+- Memory
+- Jobs
+- Help
+
+### `/help`
+
+Explains the simplified public surface and points users to the menu-driven flows.
+
+## Memory Update
+
+Memory Update is the Telegram-managed workflow for durable memory maintenance.
+
+It is not a public slash command.
+
+Memory Update can be used to:
+
+- run memory maintenance now
+- enable or disable automatic updates
+- choose a preset cadence
+- enter a custom cron schedule when needed
+- inspect status, last run, last result, and last error
+
+The schedule is stored per user. The default behavior is an enabled update cadence of every 24 hours for a first-time user.
+
+## Autonomous jobs
+
+Autonomous jobs are created and managed from Telegram.
+
+A job has its own schedule, and the unified scheduler dispatches due jobs from the database. This replaces the old single global cron-centric model.
+
+Jobs support preset intervals and custom cron expressions. The bot surfaces job creation, editing, enable/disable, and deletion through menu flows instead of slash commands.
+
+## Agent prompt and tools
+
+The agent system prompt is extracted into `src/agent/prompts/system.ts` so the prompt stays separate from orchestration code.
+
+The agent also has an internal current datetime tool, `tdai_current_datetime`, for situations where an accurate timestamp matters.
+
+Other local tools still include memory search, conversation search, memory status, offloaded context ref reading, durable memory saving, and Telegram message sending for autonomous runs.
+
+## Memory model
+
+The memory backend is project-owned and keeps the existing layered model:
+
+- L0 conversations
+- L1 atoms
+- L2 scenarios
+- L3 persona
+- offload refs
+- Mermaid canvas
+
+Those semantics stay unchanged.
+
+## Key files
+
+- `src/index.ts` - app bootstrap
+- `src/bot/bot.ts` - grammY wiring
+- `src/agent/prompts/system.ts` - extracted system prompt
+- `src/agent/react-agent.ts` - ReAct orchestration
+- `src/cron/scheduler.ts` - unified scheduler dispatcher
+- `src/cron/autonomous.ts` - autonomous execution entry points
+- `src/services/` - scheduling and memory-update services
+- `src/tools/local.ts` - local memory and Telegram tools
+- `src/db/schema.ts` - SQLite schema
+
+## Run locally
 
 ```bash
 bun install
-cp .env.example .env
-```
-
-Isi `.env` minimal:
-
-```bash
-BOT_TOKEN=telegram-bot-token
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4.1-mini
-```
-
-## 2. Run
-
-```bash
 bun run dev
 ```
 
-Test di Telegram:
-
-```text
-/start
-/tools
-/memory
-halo, bantu saya bikin bot AI
-```
-
-## 3. Cron autonomous loop dari `.env`
-
-Default:
+## Tests
 
 ```bash
-AUTONOMOUS_CRON=*/10 * * * *
-AUTONOMOUS_MIN_INTERVAL_SEC=600
-MEMORY_MAINTENANCE_CRON=*/10 * * * *
+bun test
+bun run typecheck
 ```
 
-Tambah autonomous job dari Telegram:
+## Documentation
 
-```text
-/job setiap run, cek memory saya dan beri ringkasan kalau ada hal penting
-```
-
-Setiap tick cron, agent akan memanggil `runReactAgent(..., mode: "autonomous")`, bisa memakai tools, memory, dan `telegram_send_message`.
-
-## 4. Memory design
-
-```text
-L0 Conversation
-  - SQLite table conversations
-  - JSONL per chat: data/history/<chat_id>.jsonl
-
-L1 Atom
-  - SQLite table memory_atoms
-  - FTS5 search
-  - dedup sederhana per user
-
-L2 Scenario
-  - SQLite table memory_scenarios
-  - Markdown files: data/memory/scenarios/*.md
-
-L3 Persona
-  - SQLite table personas
-  - Markdown file: data/memory/persona-<user_id>.md
-
-Short-term context offload
-  - Raw heavy tool result: data/memory/refs/<chat_id>/<node_id>.md
-  - Mermaid canvas: data/memory/canvases/<chat_id>.mmd
-  - Agent can drill down with tdai_context_ref_read
-```
-
-## 5. Inspect memory runtime
-
-List user yang sudah punya percakapan:
-
-```bash
-bun run memory:inspect
-```
-
-Inspect memory untuk user tertentu, dengan chat id opsional untuk menampilkan canvas yang aktif:
-
-```bash
-bun run memory:inspect -- 123456789
-bun run memory:inspect -- 123456789 5980836755
-```
-
-Output akan menunjukkan backend, owner, jumlah layer memory, status offload, cron maintenance, lalu persona/scenario yang sudah tersimpan.
-
-## 6. Local tools registered to the agent
-
-```text
-tdai_memory_search          search L3/L2/L1/L0 + canvas
-tdai_conversation_search    search raw L0 conversations
-tdai_context_ref_read       read offloaded refs/*.md by node_id/result_ref
-tdai_memory_status          inspect memory layer counts
-save_memory                 save durable L1 atom
-telegram_send_message       send Telegram messages during autonomous runs
-```
-
-## 8. Commands
-
-```text
-/start          help
-/tools          list tools
-/memory         memory status + top memory
-/memory_force   force L1→L2→L3 extraction now
-/job <prompt>   create autonomous job
-/jobs           list autonomous jobs
-```
-
-## 9. File penting
-
-```text
-src/index.ts                  bootstrap app
-src/bot/bot.ts                grammY handlers
-src/agent/react-agent.ts      ReAct-style tool loop + offload integration
-src/agent/providers/*         OpenAI/Claude abstraction
-src/tools/registry.ts         multi-tool registry persisted in SQLite
-src/tools/local.ts            tdai_* memory tools + Telegram tool
-src/memory/core/service.ts    project-owned memory service facade
-src/memory/integration/*      memory runtime wiring
-src/cron/autonomous.ts        node-cron autonomous + memory loops
-src/db/schema.ts              SQLite schema
-scripts/inspect-memory.ts     inspect the local memory backend
-```
-
-## 10. Notes
-
-- Runtime memory sepenuhnya dimiliki project ini; tidak perlu vendor workflow eksternal untuk menjalankannya.
-- `src/memory/jsonl.ts` tetap dipakai untuk export/append JSONL event trail.
+- `docs/architecture.md`
+- `docs/telegram-flow.md`
+- `docs/memory.md`
+- `docs/autonomous-jobs.md`
