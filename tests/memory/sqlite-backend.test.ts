@@ -106,6 +106,46 @@ test("SQLite backend round-trips checkpoint values including numbers", async () 
   }
 });
 
+test("migrate upgrades legacy memory_atoms table for canonical atom upserts", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE memory_atoms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        importance INTEGER NOT NULL DEFAULT 3,
+        source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
+        source_layer TEXT NOT NULL DEFAULT 'L1',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, text)
+      );
+    `);
+    migrateSqliteMemory(db);
+
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+
+    const result = await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User prefers concise responses.",
+      sourceConversationIds: [1],
+      sourceLayer: "L1",
+    });
+
+    expect(result.created).toBe(true);
+    expect(result.atom.text).toBe("User prefers concise responses.");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("migrate upgrades legacy app memory tables with missing columns", () => {
   const db = new Database(":memory:");
 

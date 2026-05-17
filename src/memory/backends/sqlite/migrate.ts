@@ -131,6 +131,9 @@ export function migrateSqliteMemory(db: Database) {
   const atomColumns = new Set(
     (db.query(`PRAGMA table_info(memory_atoms)`).all() as Array<{ name: string }>).map((row) => row.name),
   );
+  if (!atomColumns.has("canonical_text")) {
+    db.exec(`ALTER TABLE memory_atoms ADD COLUMN canonical_text TEXT`);
+  }
   if (!atomColumns.has("source_layer")) {
     db.exec(`ALTER TABLE memory_atoms ADD COLUMN source_layer TEXT NOT NULL DEFAULT 'L1'`);
   }
