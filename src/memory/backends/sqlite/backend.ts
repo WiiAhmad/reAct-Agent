@@ -109,16 +109,6 @@ export class SqliteMemoryBackend implements MemoryBackend {
     private readonly options: SqliteMemoryBackendOptions,
   ) {}
 
-  private ensureMemoryAtomCanonicalTextColumn(): void {
-    const atomColumns = new Set(
-      (this.db.query(`PRAGMA table_info(memory_atoms)`).all() as Array<{ name: string }>).map((row) => row.name),
-    );
-
-    if (!atomColumns.has("canonical_text")) {
-      this.db.exec(`ALTER TABLE memory_atoms ADD COLUMN canonical_text TEXT`);
-    }
-  }
-
   private indexMemoryAtomVector(atomId: number, embeddingJson: string): void {
     if (!this.vecReady) {
       return;
@@ -464,8 +454,6 @@ export class SqliteMemoryBackend implements MemoryBackend {
   }
 
   async upsertMemoryAtom(atom: NewMemoryAtom): Promise<UpsertMemoryAtomResult> {
-    this.ensureMemoryAtomCanonicalTextColumn();
-
     const text = atom.text.trim();
     if (!text) {
       throw new Error("Memory atom text cannot be empty");

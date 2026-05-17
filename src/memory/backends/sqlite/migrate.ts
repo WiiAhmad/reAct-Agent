@@ -85,6 +85,7 @@ export function migrateSqliteMemory(db: Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       text TEXT NOT NULL,
+      canonical_text TEXT,
       importance INTEGER NOT NULL DEFAULT 3,
       source_turn_ids_json TEXT NOT NULL DEFAULT '[]',
       source_layer TEXT NOT NULL DEFAULT 'L1',
