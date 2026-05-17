@@ -340,6 +340,45 @@ test("app schema keeps transitional legacy memory tables available", () => {
   ]);
 });
 
+test("SQLite backend keeps programming language atoms with semantic symbols separate", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+
+    const first = await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User primarily codes in C++.",
+      sourceConversationIds: [1],
+      sourceLayer: "L1",
+    });
+    const second = await backend.upsertMemoryAtom({
+      userId: "u1",
+      text: "User primarily codes in C#.",
+      sourceConversationIds: [2],
+      sourceLayer: "L1",
+    });
+
+    const atoms = await backend.listMemoryAtoms("u1", 10);
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(true);
+    expect(atoms).toHaveLength(2);
+    expect(atoms.map((atom) => atom.text).sort()).toEqual([
+      "User primarily codes in C#.",
+      "User primarily codes in C++.",
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("SQLite backend canonicalizes obvious atom variants on upsert", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 
