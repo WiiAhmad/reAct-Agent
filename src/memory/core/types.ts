@@ -169,6 +169,7 @@ export type TaskGraphNode = {
   id: number;
   chatId: string;
   userId: string;
+  taskId?: number;
   nodeId: string;
   toolName?: string;
   args: EventMeta;
@@ -181,6 +182,7 @@ export type TaskGraphNode = {
 export type NewTaskGraphNode = {
   chatId: string;
   userId: string;
+  taskId?: number;
   nodeId: string;
   toolName?: string;
   args?: EventMeta;
@@ -188,6 +190,112 @@ export type NewTaskGraphNode = {
   resultRef?: string;
   status: string;
   createdAt?: string;
+};
+
+export type TaskCanvasStatus = "active" | "completed" | "inactive";
+
+export type TaskCanvas = {
+  id: number;
+  chatId: string;
+  userId: string;
+  label: string;
+  filePath: string;
+  status: TaskCanvasStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NewTaskCanvas = {
+  chatId: string;
+  userId: string;
+  label: string;
+  filePath?: string;
+  status?: TaskCanvasStatus;
+};
+
+export type L15JudgmentSource = "rules" | "llm" | "fallback";
+
+export type L15Judgment = {
+  id: number;
+  chatId: string;
+  userId: string;
+  sourceConversationId?: number;
+  taskCompleted: boolean;
+  isLongTask: boolean;
+  isContinuation: boolean;
+  selectedTaskId?: number;
+  newTaskLabel?: string;
+  source: L15JudgmentSource;
+  createdAt: string;
+};
+
+export type NewL15Judgment = {
+  chatId: string;
+  userId: string;
+  sourceConversationId?: number;
+  taskCompleted: boolean;
+  isLongTask: boolean;
+  isContinuation: boolean;
+  selectedTaskId?: number;
+  newTaskLabel?: string;
+  source: L15JudgmentSource;
+  createdAt?: string;
+};
+
+export type TaskBoundaryResult = "long" | "short" | "pending";
+
+export type TaskBoundary = {
+  id: number;
+  chatId: string;
+  userId: string;
+  startNodeSequence: number;
+  result: TaskBoundaryResult;
+  taskId?: number;
+  createdAt: string;
+};
+
+export type NewTaskBoundary = {
+  chatId: string;
+  userId: string;
+  startNodeSequence: number;
+  result: TaskBoundaryResult;
+  taskId?: number;
+  createdAt?: string;
+};
+
+export type GeneratedSkillStatus = "draft" | "reviewed" | "rejected" | "exported";
+
+export type GeneratedSkill = {
+  id: number;
+  sourceTaskId: number;
+  chatId: string;
+  userId: string;
+  skillName: string;
+  skillDescription: string;
+  skillFocus?: string;
+  skillFilePath: string;
+  sourceCanvasFilePath: string;
+  sourceNodeIds: string[];
+  sourceEvidenceIds: string[];
+  status: GeneratedSkillStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NewGeneratedSkill = {
+  sourceTaskId: number;
+  chatId: string;
+  userId: string;
+  skillName: string;
+  skillDescription: string;
+  skillFocus?: string;
+  skillFilePath: string;
+  sourceCanvasFilePath: string;
+  sourceNodeIds: string[];
+  sourceEvidenceIds: string[];
+  status?: GeneratedSkillStatus;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type LineageNodeKind = "conversation" | "memory_atom" | "memory_scenario" | "persona";

@@ -12,6 +12,7 @@ import { type BotContext } from "./context";
 import { buildHelpKeyboard, buildMainMenuKeyboard, buildMemorySummaryKeyboard, buildStartKeyboard, uiCallbacks } from "./ui/keyboards";
 import { buildRichMemorySummary, renderHelpScreen, renderJobsScreen, renderMainMenuScreen, renderMemorySummaryScreen, renderStartScreen } from "./ui/renderers";
 import { createMemoryUpdateConversation, memoryUpdateConversationId } from "./conversations/memory-update";
+import { createSkillDraftConversation, skillDraftConversationId } from "./conversations/skill-draft";
 import { createJobCreateConversation } from "./conversations/job-create";
 import { createJobDetailConversation, jobDetailConversationId } from "./conversations/job-detail";
 
@@ -89,15 +90,17 @@ async function showHelp(ctx: BotContext) {
 async function showMemorySummary(ctx: BotContext, deps: BotDeps) {
   const chatId = resolveChatId(ctx);
   const userId = resolveUserId(ctx);
-  const [memoryStatus, recall] = await Promise.all([
+  const [memoryStatus, recall, generatedSkillCount] = await Promise.all([
     deps.memory.memoryStatus(userId, chatId),
     deps.memory.recall(userId, "project preferences workflow coding", 5, chatId),
+    deps.memory.countGeneratedSkills(userId),
   ]);
   const setting = deps.memoryUpdateSettings.getOrCreate(userId);
   const summary = buildRichMemorySummary({
     memoryStatus,
     recall,
     memoryUpdateSummary: deps.memoryUpdateSettings.renderSummary(setting),
+    generatedSkillCount,
   });
   await presentScreen(ctx, renderMemorySummaryScreen(summary), buildMemorySummaryKeyboard());
 }
@@ -113,6 +116,7 @@ export function createTelegramBot(deps: BotDeps) {
 
   bot.use(conversations());
   bot.use(createConversation(createMemoryUpdateConversation({ memory: deps.memory, settings: deps.memoryUpdateSettings }), { id: memoryUpdateConversationId } as never));
+  bot.use(createConversation(createSkillDraftConversation({ memory: deps.memory }), { id: skillDraftConversationId } as never));
   bot.use(createConversation(createJobCreateConversation({ autonomousJobs: deps.autonomousJobs }), { id: "job-create" } as never));
   bot.use(createConversation(createJobDetailConversation({ autonomousJobs: deps.autonomousJobs }), { id: jobDetailConversationId } as never));
 
@@ -158,6 +162,11 @@ export function createTelegramBot(deps: BotDeps) {
   bot.callbackQuery(uiCallbacks.memoryUpdate, async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.conversation.enter(memoryUpdateConversationId);
+  });
+
+  bot.callbackQuery(uiCallbacks.skillDrafts, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.conversation.enter(skillDraftConversationId);
   });
 
   bot.callbackQuery(uiCallbacks.jobs, async (ctx) => {

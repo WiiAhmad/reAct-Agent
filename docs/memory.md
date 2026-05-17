@@ -11,9 +11,15 @@ The memory model is unchanged and must remain as-is:
 - L2 scenarios
 - L3 persona
 - offload refs
-- Mermaid canvas
+- task-scoped Mermaid canvases
 
-These layers keep their existing meanings and responsibilities.
+The durable memory path remains L0 -> L1 -> L2 -> L3. Those layers keep their existing meanings and responsibilities.
+
+The context-offload path is separate from durable memory maintenance:
+
+`offload L1 evidence summaries -> L1.5 task judgment -> task-scoped L2 Mermaid canvas -> L4 draft skill generation`
+
+L1.5 decides whether a turn belongs to a long-running task, continues an existing task, closes one, or should stay short-term only. Task-scoped L2 Mermaid canvases summarize evidence for active tasks without changing durable L1/L2/L3 maintenance semantics.
 
 ## What Memory Update means
 
@@ -40,11 +46,19 @@ The default behavior for a new user is:
 
 That makes memory maintenance a Telegram-managed setting rather than a `.env`-driven user-facing behavior.
 
-## Offload refs and canvas
+## Offload refs and task canvases
 
 When the agent offloads heavy tool output, the raw result is stored in an offload ref file.
 
-The Mermaid canvas provides a compact navigational summary of the active memory context. The agent can read the offloaded reference later if it needs the raw details.
+The task-scoped Mermaid canvas provides a compact navigational summary of the active task context. The agent can read the offloaded reference later if it needs the raw details.
+
+short one-shot tool use like current date/time does not update task canvases. These short interactions can answer directly without creating or changing a long-running task canvas.
+
+## L4 draft skills
+
+L4 draft skill generation is menu/user-triggered from Skill Drafts. It uses a selected task canvas and linked evidence to write draft skills under project storage.
+
+L4 does not auto-install globally. A generated skill remains a reviewable draft until a user explicitly handles it outside this pipeline.
 
 ## Why this matters
 

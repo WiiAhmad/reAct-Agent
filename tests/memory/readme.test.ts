@@ -10,6 +10,12 @@ test("README reflects the current Telegram runtime", () => {
   expect(readme).toContain("/menu");
   expect(readme).toContain("/help");
   expect(readme).toContain("@grammyjs/conversations");
+  expect(readme).toContain("L1.5 task judgment");
+  expect(readme).toContain("task-scoped Mermaid canvases");
+  expect(readme).toContain("L4 draft skill generation");
+  expect(readme).toContain("Skill Drafts");
+  expect(readme).toContain("configured timezone/locale");
+  expect(readme).toContain("weekday");
   expect(readme).not.toContain("/memory_force");
   expect(readme).not.toContain("/job <prompt>");
 
@@ -30,12 +36,20 @@ test("docs describe the current Telegram runtime model", () => {
   expect(architecture).toContain("/menu");
   expect(architecture).toContain("/help");
   expect(architecture).toContain("@grammyjs/conversations");
+  expect(architecture).toContain("context-offload path is intentionally separate from durable memory maintenance");
+  expect(architecture).toContain("L1.5 task judgment");
+  expect(architecture).toContain("task-scoped L2 Mermaid canvas");
+  expect(architecture).toContain("L4 draft skill generation");
 
   expect(telegramFlow).toContain("Telegram menus, inline buttons, and conversations from `@grammyjs/conversations`.");
   expect(telegramFlow).toContain("`@grammyjs/conversations` is used for any flow that needs multiple steps.");
   expect(telegramFlow).toContain("The old command-heavy surface is gone.");
 
   expect(memory).toContain("This project uses a project-owned memory backend with a protected layered model.");
+  expect(memory).toContain("durable memory path remains L0 -> L1 -> L2 -> L3");
+  expect(memory).toContain("offload L1 evidence summaries -> L1.5 task judgment -> task-scoped L2 Mermaid canvas -> L4 draft skill generation");
+  expect(memory).toContain("short one-shot tool use like current date/time does not update task canvases");
+  expect(memory).toContain("does not auto-install globally");
   expect(memory).toContain("Memory Update is the Telegram-managed workflow for durable memory maintenance.");
   expect(memory).toContain("It is not a public slash command.");
   expect(memory).toContain("Memory Update scheduling is stored per user.");

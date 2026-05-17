@@ -19,5 +19,9 @@ test("shared system prompt reflects the Telegram menu runtime", () => {
   expect(prompt).toContain("/start, /menu, and /help");
   expect(prompt).toContain("Memory Update");
   expect(prompt).toContain("tdai_current_datetime");
+  expect(prompt).toContain("short-term context offload");
+  expect(prompt).toContain("L1.5");
+  expect(prompt).toContain("L4 draft skills");
+  expect(prompt).toContain("menu/review flows");
   expect(prompt).toContain("concise");
 });

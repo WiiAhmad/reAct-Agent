@@ -13,6 +13,8 @@ type MemoryServiceFactoryConfig = {
     memoryRefsDir: string;
     memoryCanvasDir: string;
     memoryJsonlExportDir: string;
+    memoryTaskCanvasDir?: string;
+    memoryGeneratedSkillsDir?: string;
   };
   memory: {
     maintenanceCron: string;
@@ -21,14 +23,51 @@ type MemoryServiceFactoryConfig = {
     offloadSummaryChars: number;
     sqliteVecEnabled: boolean;
     jsonlExportEnabled: boolean;
+    l15?: {
+      enabled: boolean;
+      mode: "rules" | "llm" | "hybrid";
+      recentMessages: number;
+      historyTaskLimit: number;
+      maxCanvasChars: number;
+      safeFallback: "short";
+    };
+    l4?: {
+      enabled: boolean;
+      mode: "local";
+      requireCompletedTask: boolean;
+      maxEvidenceEntries: number;
+      maxCanvasChars: number;
+      maxSkillChars: number;
+    };
   };
 };
 
+const defaultL15 = {
+  enabled: true,
+  mode: "hybrid" as const,
+  recentMessages: 6,
+  historyTaskLimit: 10,
+  maxCanvasChars: 12000,
+  safeFallback: "short" as const,
+};
+
+const defaultL4 = {
+  enabled: true,
+  mode: "local" as const,
+  requireCompletedTask: false,
+  maxEvidenceEntries: 80,
+  maxCanvasChars: 20000,
+  maxSkillChars: 20000,
+};
+
 export async function createMemoryService(db: Database, llm: LlmProvider, config: MemoryServiceFactoryConfig): Promise<MemoryService> {
+  const generatedSkillsDir = config.storage.memoryGeneratedSkillsDir ?? `${config.storage.dataDir}/memory/skills`;
   const backend = new SqliteMemoryBackend(db, {
     dataDir: config.storage.dataDir,
     refsDir: config.storage.memoryRefsDir,
     canvasDir: config.storage.memoryCanvasDir,
+    taskCanvasDir: config.storage.memoryTaskCanvasDir,
+    generatedSkillsDir,
     sqliteVecEnabled: config.memory.sqliteVecEnabled,
   });
   await backend.init();
@@ -53,6 +92,9 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
       backendOwner: "project-owned memory backend",
       maintenanceCron: config.memory.maintenanceCron,
       offloadEnabled: config.memory.offloadEnabled,
+      l15: config.memory.l15 ?? defaultL15,
+      l4: config.memory.l4 ?? defaultL4,
+      generatedSkillsDir,
     },
     recallService,
     offloadService,

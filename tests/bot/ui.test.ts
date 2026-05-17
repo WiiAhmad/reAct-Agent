@@ -5,6 +5,7 @@ import {
   buildMainMenuKeyboard,
   buildMemorySummaryKeyboard,
   buildSchedulePresetKeyboard,
+  buildSkillDraftKeyboard,
   buildStartKeyboard,
 } from "../../src/bot/ui/keyboards";
 import {
@@ -53,7 +54,8 @@ test("help screen documents the reduced command surface", () => {
   expect(screen).toContain("/start - buka start screen");
   expect(screen).toContain("/menu - buka menu utama");
   expect(screen).toContain("/help - tampilkan bantuan ini");
-  expect(screen).toContain("Memory Update dan Jobs tersedia dari menu");
+  expect(screen).toContain("Memory Update, Skill Drafts, dan Jobs tersedia dari menu");
+  expect(screen).not.toContain("/create-skill");
   expect(screen).not.toContain("/tools");
   expect(screen).not.toContain("/memory_force");
   expect(screen).not.toContain("/job");
@@ -63,6 +65,11 @@ test("help screen documents the reduced command surface", () => {
 test("memory summary and jobs screens keep the menu-driven copy", () => {
   expect(buildMemorySummaryKeyboard().inline_keyboard.flat().map((button) => button.text)).toEqual([
     "Memory Update",
+    "Skill Drafts",
+    "Back",
+  ]);
+  expect(buildSkillDraftKeyboard().inline_keyboard.flat().map((button) => button.text)).toEqual([
+    "Generate Draft Skill",
     "Back",
   ]);
   expect(buildJobsKeyboard().inline_keyboard.flat().map((button) => button.text)).toEqual([

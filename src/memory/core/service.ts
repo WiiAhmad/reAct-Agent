@@ -1,11 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { LlmProvider } from "../../agent/types";
+import type { AgentMessage, LlmProvider } from "../../agent/types";
+import { generateL4Skill, validateGeneratedSkill, writeDraftSkill } from "../offload/l4";
 import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "./backend";
-import type { ConversationTurnRole, EventMeta, InteractionEvent } from "./types";
+import type { ConversationTurnRole, EventMeta, InteractionEvent, TaskCanvas } from "./types";
 import { InteractionLogService } from "../events/service";
 import { OffloadService, type OffloadToolResult } from "../offload/service";
+import { runL15Judgment } from "../offload/l15";
+import type { L15JudgmentResult } from "../offload/types";
 import { PipelineCoordinator, type PipelineMaintenanceResult } from "../pipeline/coordinator";
 import { RecallService } from "../recall/service";
 
@@ -39,7 +42,45 @@ export type MemoryServiceOptions = {
   backendOwner: string;
   maintenanceCron: string;
   offloadEnabled: boolean;
+  l15: {
+    enabled: boolean;
+    mode: "rules" | "llm" | "hybrid";
+    recentMessages: number;
+    historyTaskLimit: number;
+    maxCanvasChars: number;
+    safeFallback: "short";
+  };
+  l4: {
+    enabled: boolean;
+    mode: "local";
+    requireCompletedTask: boolean;
+    maxEvidenceEntries: number;
+    maxCanvasChars: number;
+    maxSkillChars: number;
+  };
+  generatedSkillsDir: string;
 };
+
+export type JudgeTaskTurnInput = {
+  chatId: string;
+  userId: string;
+  latestUserMessage: string;
+  sourceConversationId?: number;
+};
+
+export type JudgeTaskTurnResult = {
+  judgment: L15JudgmentResult;
+  taskId?: number;
+};
+
+export type GenerateSkillDraftInput = {
+  chatId: string;
+  userId: string;
+  taskId: number;
+  skillFocus?: string;
+};
+
+export type GenerateSkillDraftResult = { ok: true; skillName: string; filePath: string } | { ok: false; reason: string };
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -57,6 +98,7 @@ type MemoryServiceState = {
   interactionLogService: InteractionLogService;
   offloadService: OffloadService;
   pipelineCoordinator: PipelineCoordinator;
+  llm: LlmProvider;
   options: MemoryServiceOptions;
 };
 
@@ -91,6 +133,7 @@ export class MemoryService {
       interactionLogService,
       offloadService,
       pipelineCoordinator,
+      llm,
       options,
     });
   }
@@ -155,13 +198,31 @@ export class MemoryService {
 
   async memoryStatus(userId: string, chatId?: string): Promise<string> {
     const { backend, options } = getState(this);
-    const [conversationCount, atomCount, scenarioCount, offloadRefCount, persona, taskCanvasPath] = await Promise.all([
+    const taskCanvasPath = async () => {
+      if (!chatId) {
+        return undefined;
+      }
+      const activeTask = await backend.getActiveTaskCanvas(userId, chatId);
+      if (activeTask) {
+        const activePath = await backend.getTaskCanvasFilePath(activeTask.id);
+        if (activePath?.relativePath) {
+          return activePath.relativePath;
+        }
+        if (activeTask.filePath) {
+          return activeTask.filePath;
+        }
+      }
+      const canvas = await backend.getTaskCanvas(chatId);
+      return canvas ? backend.getTaskCanvasPath(chatId) : undefined;
+    };
+    const [conversationCount, atomCount, scenarioCount, offloadRefCount, generatedSkillCount, persona, resolvedTaskCanvasPath] = await Promise.all([
       backend.countConversationTurns(userId),
       backend.countMemoryAtoms(userId),
       backend.countMemoryScenarios(userId),
       backend.countOffloadRefs(userId),
+      backend.countGeneratedSkills(userId),
       backend.getPersona(userId),
-      chatId ? backend.getTaskCanvas(chatId).then((canvas) => (canvas ? backend.getTaskCanvasPath(chatId) : undefined)) : Promise.resolve(undefined),
+      taskCanvasPath(),
     ]);
 
     return [
@@ -173,7 +234,11 @@ export class MemoryService {
       `L3 persona=${persona ? "yes" : "no"}`,
       `offload_refs=${offloadRefCount}`,
       `offload_enabled=${options.offloadEnabled}`,
-      `task_canvas=${taskCanvasPath ?? "none"}`,
+      `L1.5 enabled=${options.l15.enabled}`,
+      `L1.5 mode=${options.l15.mode}`,
+      `L4 enabled=${options.l4.enabled}`,
+      `generated_skill_drafts=${generatedSkillCount}`,
+      `task_canvas=${resolvedTaskCanvasPath ?? "none"}`,
       `memory_maintenance_cron=${options.maintenanceCron}`,
     ].join("\n");
   }
@@ -252,15 +317,172 @@ export class MemoryService {
     }));
   }
 
-  async offloadToolResult(input: { chatId: string; userId: string; toolName: string; args: EventMeta; rawResult: string }): Promise<OffloadToolResult> {
+  async listTaskCanvases(userId: string, chatId: string, limit = 10): Promise<TaskCanvas[]> {
+    const { backend } = getState(this);
+    return backend.listTaskCanvases(userId, chatId, limit);
+  }
+
+  async countTaskCanvases(userId: string, chatId: string): Promise<number> {
+    const { backend } = getState(this);
+    return (await backend.listTaskCanvases(userId, chatId, Number.MAX_SAFE_INTEGER)).length;
+  }
+
+  async countGeneratedSkills(userId: string): Promise<number> {
+    const { backend } = getState(this);
+    return backend.countGeneratedSkills(userId);
+  }
+
+  async listGeneratedSkills(userId: string, limit = 10) {
+    const { backend } = getState(this);
+    return backend.listGeneratedSkills(userId, limit);
+  }
+
+  async judgeTaskTurn(input: JudgeTaskTurnInput): Promise<JudgeTaskTurnResult> {
+    const { backend, llm, options } = getState(this);
+    const fallback: L15JudgmentResult = { taskCompleted: false, isLongTask: false, isContinuation: false, source: "fallback" };
+
+    if (!options.l15.enabled) {
+      return { judgment: fallback };
+    }
+
+    const [turns, activeTask, historicalTasks] = await Promise.all([
+      backend.listConversationTurns(input.userId, input.chatId, options.l15.recentMessages),
+      backend.getActiveTaskCanvas(input.userId, input.chatId),
+      backend.listTaskCanvases(input.userId, input.chatId, options.l15.historyTaskLimit),
+    ]);
+    const activeCanvas = activeTask ? await backend.getTaskCanvas(input.chatId) : undefined;
+    const recentMessages = turns
+      .filter((turn) => turn.role === "user" || turn.role === "assistant")
+      .map((turn) => ({ role: turn.role, content: turn.content }) as AgentMessage);
+
+    const judgment = await runL15Judgment({
+      latestUserMessage: input.latestUserMessage,
+      activeTask: activeTask ? { id: activeTask.id, label: activeTask.label, status: activeTask.status, canvas: activeCanvas } : undefined,
+      historicalTasks: historicalTasks.map((task) => ({ id: task.id, label: task.label, status: task.status })),
+      llm,
+      mode: options.l15.mode,
+      recentMessages,
+      maxCanvasChars: options.l15.maxCanvasChars,
+    });
+
+    let taskId = judgment.selectedTaskId;
+    if (judgment.taskCompleted && activeTask && !judgment.isLongTask) {
+      await backend.updateTaskCanvasStatus(activeTask.id, "completed");
+      taskId = activeTask.id;
+    } else if (judgment.isContinuation && judgment.selectedTaskId) {
+      await backend.updateTaskCanvasStatus(judgment.selectedTaskId, "active");
+      taskId = judgment.selectedTaskId;
+    } else if (judgment.isLongTask && !taskId && judgment.newTaskLabel) {
+      const task = await backend.createTaskCanvas({
+        chatId: input.chatId,
+        userId: input.userId,
+        label: judgment.newTaskLabel,
+        status: "active",
+      });
+      taskId = task.id;
+    }
+
+    await backend.recordL15Judgment({
+      chatId: input.chatId,
+      userId: input.userId,
+      sourceConversationId: input.sourceConversationId,
+      taskCompleted: judgment.taskCompleted,
+      isLongTask: judgment.isLongTask,
+      isContinuation: judgment.isContinuation,
+      selectedTaskId: taskId,
+      newTaskLabel: judgment.newTaskLabel,
+      source: judgment.source,
+    });
+    await backend.insertTaskBoundary({
+      chatId: input.chatId,
+      userId: input.userId,
+      startNodeSequence: 0,
+      result: judgment.isLongTask && taskId ? "long" : "short",
+      taskId: judgment.isLongTask && taskId ? taskId : undefined,
+    });
+
+    return { judgment, taskId: judgment.isLongTask ? taskId : undefined };
+  }
+
+  async offloadToolResult(input: { chatId: string; userId: string; taskId?: number; toolName: string; args: EventMeta; rawResult: string }): Promise<OffloadToolResult> {
     const { offloadService } = getState(this);
     return offloadService.offloadToolResult({
       chatId: input.chatId,
       userId: input.userId,
+      taskId: input.taskId,
       toolName: input.toolName,
       args: input.args,
       rawResult: input.rawResult,
     });
+  }
+
+  async generateSkillDraft(input: GenerateSkillDraftInput): Promise<GenerateSkillDraftResult> {
+    const { backend, llm, options } = getState(this);
+    if (!options.l4.enabled) {
+      return { ok: false, reason: "L4 skill generation is disabled." };
+    }
+
+    const task = await backend.getTaskCanvasById(input.userId, input.taskId);
+    if (!task || task.chatId !== input.chatId) {
+      return { ok: false, reason: "Task canvas not found." };
+    }
+    if (options.l4.requireCompletedTask && task.status !== "completed") {
+      return { ok: false, reason: "Task must be completed before skill generation." };
+    }
+
+    let canvas = "";
+    try {
+      canvas = await readFile(resolve(options.dataDir, task.filePath), "utf8");
+    } catch {
+      return { ok: false, reason: "Task canvas is empty." };
+    }
+    if (!canvas.trim()) {
+      return { ok: false, reason: "Task canvas is empty." };
+    }
+
+    const nodes = await backend.listTaskGraphNodesForTask(task.id, options.l4.maxEvidenceEntries);
+    const skillFocus = input.skillFocus?.trim() || null;
+    const generated = await generateL4Skill(llm, {
+      taskId: task.id,
+      mmdFilename: task.filePath,
+      mmdContent: canvas,
+      offloadEntries: nodes.map((node) => ({
+        nodeId: node.nodeId,
+        toolName: node.toolName,
+        args: node.args,
+        summary: node.summary,
+        resultRef: node.resultRef,
+        createdAt: node.createdAt,
+      })),
+      skillFocus,
+      maxCanvasChars: options.l4.maxCanvasChars,
+      maxSkillChars: options.l4.maxSkillChars,
+    });
+    if (!generated) {
+      return { ok: false, reason: "L4 response could not be parsed." };
+    }
+
+    const validation = validateGeneratedSkill(generated, { chatId: input.chatId, userId: input.userId });
+    if (!validation.ok) {
+      return validation;
+    }
+
+    const draft = await writeDraftSkill(options.generatedSkillsDir, generated);
+    await backend.insertGeneratedSkill({
+      sourceTaskId: task.id,
+      chatId: input.chatId,
+      userId: input.userId,
+      skillName: generated.skillName,
+      skillDescription: generated.skillDescription,
+      skillFocus: skillFocus ?? undefined,
+      skillFilePath: draft.relativePath,
+      sourceCanvasFilePath: task.filePath,
+      sourceNodeIds: nodes.map((node) => node.nodeId),
+      sourceEvidenceIds: nodes.map((node) => node.resultRef ?? node.nodeId),
+      status: "draft",
+    });
+
+    return { ok: true, skillName: generated.skillName, filePath: draft.relativePath };
   }
 
   async runMaintenanceForUser(userId: string, force = false): Promise<PipelineMaintenanceResult> {

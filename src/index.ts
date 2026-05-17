@@ -29,6 +29,8 @@ async function main() {
       memoryRefsDir: config.storage.memoryRefsDir,
       memoryCanvasDir: config.storage.memoryCanvasDir,
       memoryJsonlExportDir: config.storage.memoryJsonlExportDir,
+      memoryTaskCanvasDir: config.storage.memoryTaskCanvasDir,
+      memoryGeneratedSkillsDir: config.storage.memoryGeneratedSkillsDir,
     },
     memory: {
       maintenanceCron: config.memory.maintenanceCron,
@@ -37,6 +39,8 @@ async function main() {
       offloadSummaryChars: config.memory.offloadSummaryChars,
       sqliteVecEnabled: config.memory.sqliteVecEnabled,
       jsonlExportEnabled: config.memory.jsonlExportEnabled,
+      l15: config.memory.l15,
+      l4: config.memory.l4,
     },
   });
   const registry = new ToolRegistry(db);

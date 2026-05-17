@@ -66,11 +66,26 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     input: truncateText(input.input, 200),
   });
 
-  await input.memory.logUserMessage({
+  const sourceConversationId = await input.memory.logUserMessage({
     chatId: input.chatId,
     userId: input.userId,
     content: input.input,
     mode: input.mode ?? "chat",
+  });
+  const taskRouting = await input.memory.judgeTaskTurn({
+    chatId: input.chatId,
+    userId: input.userId,
+    latestUserMessage: input.input,
+    sourceConversationId,
+  });
+  logAgentEvent("l15", {
+    mode: input.mode ?? "chat",
+    chatId: input.chatId,
+    isLongTask: taskRouting.judgment.isLongTask,
+    isContinuation: taskRouting.judgment.isContinuation,
+    taskCompleted: taskRouting.judgment.taskCompleted,
+    taskId: taskRouting.taskId,
+    source: taskRouting.judgment.source,
   });
 
   const [recent, recall] = await Promise.all([
@@ -172,6 +187,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
       const offload = await input.memory.offloadToolResult({
         chatId: input.chatId,
         userId: input.userId,
+        taskId: taskRouting.taskId,
         toolName: call.name,
         args: asEventMeta(call.arguments ?? {}),
         rawResult,

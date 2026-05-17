@@ -57,6 +57,16 @@ The agent uses a separate prompt module and internal tools. The prompt stays foc
 
 An internal current datetime tool is available so the agent can answer time-sensitive questions accurately instead of guessing.
 
+## Context offload pipeline
+
+The context-offload path is intentionally separate from durable memory maintenance. Durable memory continues to maintain L0 conversations, L1 atoms, L2 scenarios, and L3 persona through the Memory Update workflow.
+
+Context offload handles high-volume working context:
+
+- L1.5 task judgment classifies whether a turn should attach to a long-running task, continue an existing task, complete one, or stay short-term only.
+- task-scoped L2 Mermaid canvas files summarize evidence for active tasks without rewriting durable scenarios.
+- L4 draft skill generation turns reviewed task canvases and linked evidence into project-local draft skills through menu/review flows.
+
 ## Data ownership
 
 All durable state is stored in the project-owned backend. The runtime no longer depends on the old vendor-specific memory workflow for its primary behavior.

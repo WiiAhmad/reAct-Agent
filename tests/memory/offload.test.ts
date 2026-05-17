@@ -8,7 +8,7 @@ import { migrateSqliteMemory } from "../../src/memory/backends/sqlite/migrate";
 import { SqliteMemoryBackend } from "../../src/memory/backends/sqlite/backend";
 import { OffloadService } from "../../src/memory/offload/service";
 
-test("offload writes refs and canvas, then degrades safely when file writes fail", async () => {
+test("offload writes refs and nodes without updating a canvas when no taskId is provided", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-offload-"));
 
   try {
@@ -57,27 +57,27 @@ test("offload writes refs and canvas, then degrades safely when file writes fail
     expect(refMarkdown).toContain("x".repeat(200));
 
     const nodeRows = db
-      .query(`SELECT chat_id, user_id, node_id, tool_name, result_ref, status FROM memory_task_nodes ORDER BY id ASC`)
+      .query(`SELECT chat_id, user_id, task_id, node_id, tool_name, result_ref, status FROM memory_task_nodes ORDER BY id ASC`)
       .all() as Array<{
       chat_id: string;
       user_id: string;
+      task_id: number | null;
       node_id: string;
       tool_name: string;
       result_ref: string | null;
       status: string;
     }>;
     expect(nodeRows).toHaveLength(1);
+    expect(nodeRows[0]?.task_id).toBeNull();
     expect(nodeRows[0]?.node_id).toBe(stored.nodeId);
     expect(nodeRows[0]?.status).toBe("offloaded");
     expect(nodeRows[0]?.result_ref).toBe(stored.resultRef);
 
     const canvas = await backend.getTaskCanvas("c1");
-    expect(canvas).toContain("graph LR");
-    expect(canvas).toContain(String(stored.nodeId));
-    expect(canvas).toContain("demo_tool");
+    expect(canvas).toBeUndefined();
 
     const failingWriter = mock(async (filePath: string, content: string) => {
-      if (filePath.endsWith(".mmd")) {
+      if (filePath.endsWith(".md")) {
         throw new Error("disk full");
       }
       await writeFile(filePath, content, "utf8");
@@ -114,8 +114,72 @@ test("offload writes refs and canvas, then degrades safely when file writes fail
     await expect(access(join(tempDir, `refs/c1/${fallbackNodeId}.md`), constants.F_OK)).rejects.toThrow();
 
     const finalCanvas = await backend.getTaskCanvas("c1");
-    expect(finalCanvas).toContain(String(nodeRowsAfterFailure[0]?.node_id));
-    expect(finalCanvas).not.toContain(String(nodeRowsAfterFailure[1]?.node_id));
+    expect(finalCanvas).toBeUndefined();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("task-scoped offload writes a Mermaid task canvas for the provided taskId", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-offload-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+      taskCanvasDir: join(tempDir, "task-canvases"),
+    });
+    await backend.init();
+    const task = await backend.createTaskCanvas({ chatId: "c1", userId: "u1", label: "demo-task" });
+
+    const service = new OffloadService(backend, { offloadMinChars: 1000, offloadSummaryChars: 80 });
+    const result = await service.offloadToolResult({
+      chatId: "c1",
+      userId: "u1",
+      taskId: task.id,
+      toolName: "demo_tool",
+      args: { city: "Bandung" },
+      rawResult: "short result",
+    });
+
+    expect(result.offloaded).toBe(false);
+    expect(result.nodeId).toBeDefined();
+    const nodeRows = db.query(`SELECT task_id, node_id, tool_name FROM memory_task_nodes ORDER BY id ASC`).all() as Array<{
+      task_id: number | null;
+      node_id: string;
+      tool_name: string;
+    }>;
+    expect(nodeRows).toEqual([{ task_id: task.id, node_id: result.nodeId!, tool_name: "demo_tool" }]);
+
+    const offloaded = await service.offloadToolResult({
+      chatId: "c1",
+      userId: "u1",
+      taskId: task.id,
+      toolName: "large_tool",
+      args: { city: "Bandung" },
+      rawResult: "x".repeat(2000),
+    });
+
+    expect(offloaded.offloaded).toBe(true);
+    const updatedNodeRows = db.query(`SELECT task_id, node_id, tool_name FROM memory_task_nodes ORDER BY id ASC`).all() as Array<{
+      task_id: number | null;
+      node_id: string;
+      tool_name: string;
+    }>;
+    expect(updatedNodeRows).toEqual([
+      { task_id: task.id, node_id: result.nodeId!, tool_name: "demo_tool" },
+      { task_id: task.id, node_id: offloaded.nodeId!, tool_name: "large_tool" },
+    ]);
+
+    const canvas = await backend.getTaskCanvas("c1");
+    expect(canvas).toContain("graph LR");
+    expect(canvas).toContain(`node_id=${result.nodeId}`);
+    expect(canvas).toContain(`node_id=${offloaded.nodeId}`);
+    expect(canvas).toContain("demo_tool");
+    expect(canvas).toContain("large_tool");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -212,9 +276,7 @@ test("offload degrades safely when transactional metadata persistence fails", as
     });
 
     const finalCanvas = await backend.getTaskCanvas("c1");
-    expect(finalCanvas).toContain(String(stored.nodeId));
-    expect(finalCanvas).toContain(String(fallbackNodeId));
-    expect(finalCanvas).not.toContain(`${fallbackNodeId}_ref`);
+    expect(finalCanvas).toBeUndefined();
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

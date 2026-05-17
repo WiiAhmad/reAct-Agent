@@ -7,6 +7,8 @@ export const uiCallbacks = {
   memory: "ui:memory",
   jobs: "ui:jobs",
   memoryUpdate: "ui:memory:update",
+  skillDrafts: "ui:memory:skill-drafts",
+  generateSkillDraft: "ui:memory:skill-drafts:generate",
   addJob: "ui:jobs:add",
   refreshJobs: "ui:jobs:refresh",
   schedulePreset10m: "ui:schedule:10m",
@@ -32,7 +34,11 @@ export function buildMainMenuKeyboard() {
 }
 
 export function buildMemorySummaryKeyboard() {
-  return new InlineKeyboard().text("Memory Update", uiCallbacks.memoryUpdate).text("Back", uiCallbacks.back);
+  return new InlineKeyboard().text("Memory Update", uiCallbacks.memoryUpdate).text("Skill Drafts", uiCallbacks.skillDrafts).row().text("Back", uiCallbacks.back);
+}
+
+export function buildSkillDraftKeyboard() {
+  return new InlineKeyboard().text("Generate Draft Skill", uiCallbacks.generateSkillDraft).row().text("Back", uiCallbacks.memory);
 }
 
 export function buildJobsKeyboard() {

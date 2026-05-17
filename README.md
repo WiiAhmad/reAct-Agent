@@ -17,6 +17,7 @@ Everything else happens through Telegram menus, inline buttons, and structured c
 - uses `@grammyjs/conversations` for multi-step UI flows
 - routes normal chat messages through a ReAct-style agent loop
 - stores memory in a project-owned backend
+- routes long-running context through L1.5 task judgment, task-scoped Mermaid canvases, and L4 draft skill generation
 - schedules autonomous jobs from Telegram and dispatches them through the unified scheduler
 - exposes an internal current datetime tool for accurate timestamp-aware reasoning
 
@@ -33,6 +34,7 @@ Opens the main menu. The menu is button-first and keeps the rest of the runtime 
 Typical menu sections:
 
 - Memory
+- Skill Drafts
 - Jobs
 - Help
 
@@ -68,7 +70,7 @@ Jobs support preset intervals and custom cron expressions. The bot surfaces job 
 
 The agent system prompt is extracted into `src/agent/prompts/system.ts` so the prompt stays separate from orchestration code.
 
-The agent also has an internal current datetime tool, `tdai_current_datetime`, for situations where an accurate timestamp matters.
+The agent also has an internal current datetime tool, `tdai_current_datetime`, for situations where an accurate timestamp matters. It returns values using the configured timezone/locale and includes weekday fields so the agent does not infer the day name.
 
 Other local tools still include memory search, conversation search, memory status, offloaded context ref reading, durable memory saving, and Telegram message sending for autonomous runs.
 
@@ -81,9 +83,11 @@ The memory backend is project-owned and keeps the existing layered model:
 - L2 scenarios
 - L3 persona
 - offload refs
-- Mermaid canvas
+- task-scoped Mermaid canvases
 
-Those semantics stay unchanged.
+Those durable semantics stay unchanged. The context-offload pipeline is separate: offloaded L1 evidence summaries are routed through L1.5 task judgment, captured in task-scoped Mermaid canvases, and can later feed L4 draft skill generation.
+
+Skill Drafts is a Telegram menu flow for reviewing task canvases and generating draft skills under project storage. Drafts are not auto-installed globally.
 
 ## Key files
 

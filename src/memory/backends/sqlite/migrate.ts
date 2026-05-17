@@ -229,6 +229,7 @@ export function migrateSqliteMemory(db: Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
+      task_id INTEGER,
       node_id TEXT NOT NULL UNIQUE,
       tool_name TEXT,
       args_json TEXT NOT NULL DEFAULT '{}',
@@ -236,6 +237,58 @@ export function migrateSqliteMemory(db: Database) {
       result_ref TEXT,
       status TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_task_canvases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_l15_judgments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      source_conversation_id INTEGER,
+      task_completed INTEGER NOT NULL,
+      is_long_task INTEGER NOT NULL,
+      is_continuation INTEGER NOT NULL,
+      selected_task_id INTEGER,
+      new_task_label TEXT,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_task_boundaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      start_node_sequence INTEGER NOT NULL,
+      result TEXT NOT NULL,
+      task_id INTEGER,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_generated_skills (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_task_id INTEGER NOT NULL,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      skill_name TEXT NOT NULL,
+      skill_description TEXT NOT NULL,
+      skill_focus TEXT,
+      skill_file_path TEXT NOT NULL,
+      source_canvas_file_path TEXT NOT NULL,
+      source_node_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS memory_atoms (
@@ -284,6 +337,10 @@ export function migrateSqliteMemory(db: Database) {
       updated_at TEXT NOT NULL
     );
   `);
+
+  if (!hasColumn(db, "memory_task_nodes", "task_id")) {
+    db.exec(`ALTER TABLE memory_task_nodes ADD COLUMN task_id INTEGER`);
+  }
 
   if (!hasColumn(db, "memory_atoms", "canonical_text")) {
     db.exec(`ALTER TABLE memory_atoms ADD COLUMN canonical_text TEXT`);

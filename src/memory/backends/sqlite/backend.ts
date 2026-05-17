@@ -1,29 +1,38 @@
-import { mkdir, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { nowIso } from "../../../utils/time";
 import { ftsQuery } from "../../../utils/text";
 import type { MemoryBackend } from "../../core/backend";
 import type {
   ConversationTurn,
   EventMeta,
+  GeneratedSkill,
   InteractionEvent,
   JsonValue,
+  L15Judgment,
   LineageLink,
   LineageSourceKind,
   MemoryAtom,
   MemoryRecallFallback,
   MemoryScenario,
   NewConversationTurn,
+  NewGeneratedSkill,
   NewInteractionEvent,
+  NewL15Judgment,
   NewLineageLink,
   NewMemoryAtom,
   NewMemoryScenario,
   NewOffloadRef,
   NewPersonaProfile,
+  NewTaskBoundary,
+  NewTaskCanvas,
   NewTaskGraphNode,
   OffloadRef,
   PersonaProfile,
   PipelineCheckpointValue,
+  TaskBoundary,
+  TaskCanvas,
+  TaskCanvasStatus,
   TaskGraphNode,
   UpsertMemoryAtomResult,
 } from "../../core/types";
@@ -36,6 +45,8 @@ type SqliteMemoryBackendOptions = {
   dataDir: string;
   refsDir: string;
   canvasDir: string;
+  taskCanvasDir?: string;
+  generatedSkillsDir?: string;
   sqliteVecEnabled?: boolean;
 };
 
@@ -52,6 +63,45 @@ function parseEventMeta(raw: string): EventMeta {
 function parseNumberArray(raw: string): number[] {
   const parsed = JSON.parse(raw) as unknown;
   return Array.isArray(parsed) ? parsed.filter((value): value is number => typeof value === "number") : [];
+}
+
+function parseStringArray(raw: string): string[] {
+  const parsed = JSON.parse(raw) as unknown;
+  return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+}
+
+function safePathSegment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "task";
+}
+
+function safeChatSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "chat";
+}
+
+function mapTaskCanvasRow(row: {
+  id: number;
+  chat_id: string;
+  user_id: string;
+  label: string;
+  file_path: string;
+  status: TaskCanvasStatus;
+  created_at: string;
+  updated_at: string;
+}): TaskCanvas {
+  return {
+    id: row.id,
+    chatId: row.chat_id,
+    userId: row.user_id,
+    label: row.label,
+    filePath: row.file_path,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function parseSearchTerms(query: string): string[] {
@@ -166,6 +216,8 @@ export class SqliteMemoryBackend implements MemoryBackend {
       mkdir(this.options.dataDir, { recursive: true }),
       mkdir(this.options.refsDir, { recursive: true }),
       mkdir(this.options.canvasDir, { recursive: true }),
+      mkdir(this.options.taskCanvasDir ?? join(this.options.dataDir, "task-canvases"), { recursive: true }),
+      mkdir(this.options.generatedSkillsDir ?? join(this.options.dataDir, "generated-skills"), { recursive: true }),
     ]);
   }
 
@@ -767,7 +819,163 @@ export class SqliteMemoryBackend implements MemoryBackend {
     return row?.count ?? 0;
   }
 
+  async createTaskCanvas(task: NewTaskCanvas): Promise<TaskCanvas> {
+    const createdAt = nowIso();
+    const status = task.status ?? "active";
+    const insert = this.db
+      .query(`
+        INSERT INTO memory_task_canvases (chat_id, user_id, label, file_path, status, created_at, updated_at)
+        VALUES (?, ?, ?, '', ?, ?, ?)
+      `)
+      .run(task.chatId, task.userId, task.label, status, createdAt, createdAt);
+    const id = Number(insert.lastInsertRowid);
+    const taskCanvasDir = this.options.taskCanvasDir ?? join(this.options.dataDir, "task-canvases");
+    const generatedAbsolutePath = join(taskCanvasDir, safeChatSegment(task.chatId), `${String(id).padStart(6, "0")}-${safePathSegment(task.label)}.mmd`);
+    const filePath = task.filePath ?? relative(this.options.dataDir, generatedAbsolutePath).replace(/\\/g, "/");
+
+    this.db
+      .query(`UPDATE memory_task_canvases SET file_path = ? WHERE id = ?`)
+      .run(filePath, id);
+
+    const absolutePath = task.filePath ? join(this.options.dataDir, task.filePath) : generatedAbsolutePath;
+    await mkdir(dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, `graph LR\n  task_${id}["${task.label.replace(/"/g, "\\\"")}"]\n`, "utf8");
+
+    return {
+      id,
+      chatId: task.chatId,
+      userId: task.userId,
+      label: task.label,
+      filePath,
+      status,
+      createdAt,
+      updatedAt: createdAt,
+    };
+  }
+
+  async getTaskCanvasById(userId: string, taskId: number): Promise<TaskCanvas | undefined> {
+    const row = this.db
+      .query(`
+        SELECT id, chat_id, user_id, label, file_path, status, created_at, updated_at
+        FROM memory_task_canvases
+        WHERE user_id = ? AND id = ?
+      `)
+      .get(userId, taskId) as Parameters<typeof mapTaskCanvasRow>[0] | null;
+
+    return row ? mapTaskCanvasRow(row) : undefined;
+  }
+
+  async getActiveTaskCanvas(userId: string, chatId: string): Promise<TaskCanvas | undefined> {
+    const row = this.db
+      .query(`
+        SELECT id, chat_id, user_id, label, file_path, status, created_at, updated_at
+        FROM memory_task_canvases
+        WHERE user_id = ? AND chat_id = ? AND status = 'active'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `)
+      .get(userId, chatId) as Parameters<typeof mapTaskCanvasRow>[0] | null;
+
+    return row ? mapTaskCanvasRow(row) : undefined;
+  }
+
+  async listTaskCanvases(userId: string, chatId: string, limit: number): Promise<TaskCanvas[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, label, file_path, status, created_at, updated_at
+        FROM memory_task_canvases
+        WHERE user_id = ? AND chat_id = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+      `)
+      .all(userId, chatId, limit) as Array<Parameters<typeof mapTaskCanvasRow>[0]>;
+
+    return rows.map(mapTaskCanvasRow);
+  }
+
+  async updateTaskCanvasStatus(taskId: number, status: TaskCanvasStatus): Promise<void> {
+    this.db
+      .query(`UPDATE memory_task_canvases SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(status, nowIso(), taskId);
+  }
+
+  async recordL15Judgment(judgment: NewL15Judgment): Promise<L15Judgment> {
+    const createdAt = judgment.createdAt ?? nowIso();
+    const result = this.db
+      .query(`
+        INSERT INTO memory_l15_judgments (
+          chat_id, user_id, source_conversation_id, task_completed, is_long_task,
+          is_continuation, selected_task_id, new_task_label, source, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        judgment.chatId,
+        judgment.userId,
+        judgment.sourceConversationId ?? null,
+        judgment.taskCompleted ? 1 : 0,
+        judgment.isLongTask ? 1 : 0,
+        judgment.isContinuation ? 1 : 0,
+        judgment.selectedTaskId ?? null,
+        judgment.newTaskLabel ?? null,
+        judgment.source,
+        createdAt,
+      );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      chatId: judgment.chatId,
+      userId: judgment.userId,
+      sourceConversationId: judgment.sourceConversationId,
+      taskCompleted: judgment.taskCompleted,
+      isLongTask: judgment.isLongTask,
+      isContinuation: judgment.isContinuation,
+      selectedTaskId: judgment.selectedTaskId,
+      newTaskLabel: judgment.newTaskLabel,
+      source: judgment.source,
+      createdAt,
+    };
+  }
+
+  async insertTaskBoundary(boundary: NewTaskBoundary): Promise<TaskBoundary> {
+    const createdAt = boundary.createdAt ?? nowIso();
+    const result = this.db
+      .query(`
+        INSERT INTO memory_task_boundaries (chat_id, user_id, start_node_sequence, result, task_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(boundary.chatId, boundary.userId, boundary.startNodeSequence, boundary.result, boundary.taskId ?? null, createdAt);
+
+    return {
+      id: Number(result.lastInsertRowid),
+      chatId: boundary.chatId,
+      userId: boundary.userId,
+      startNodeSequence: boundary.startNodeSequence,
+      result: boundary.result,
+      taskId: boundary.taskId,
+      createdAt,
+    };
+  }
+
   async getTaskCanvas(chatId: string): Promise<string | undefined> {
+    const active = this.db
+      .query(`
+        SELECT file_path
+        FROM memory_task_canvases
+        WHERE chat_id = ? AND status = 'active'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `)
+      .get(chatId) as { file_path: string } | null;
+
+    if (active) {
+      try {
+        return await readFile(join(this.options.dataDir, active.file_path), "utf8");
+      } catch {
+        // Fall through to the legacy per-chat canvas path.
+      }
+    }
+
     const row = this.db
       .query(`SELECT COUNT(*) AS count FROM memory_task_nodes WHERE chat_id = ?`)
       .get(chatId) as { count: number } | null;
@@ -793,6 +1001,19 @@ export class SqliteMemoryBackend implements MemoryBackend {
 
   async getTaskCanvasPath(chatId: string): Promise<string> {
     return join(this.options.canvasDir, `${chatId}.mmd`);
+  }
+
+  async getTaskCanvasFilePath(taskId: number): Promise<{ absolutePath: string; relativePath: string } | undefined> {
+    const row = this.db
+      .query(`SELECT file_path FROM memory_task_canvases WHERE id = ? LIMIT 1`)
+      .get(taskId) as { file_path: string } | null;
+    if (!row?.file_path) {
+      return undefined;
+    }
+    return {
+      absolutePath: join(this.options.dataDir, row.file_path),
+      relativePath: row.file_path,
+    };
   }
 
   async findOffloadRefByNodeId(userId: string, nodeId: string): Promise<OffloadRef | undefined> {
@@ -887,12 +1108,13 @@ export class SqliteMemoryBackend implements MemoryBackend {
     const createdAt = node.createdAt ?? nowIso();
     const result = this.db
       .query(`
-        INSERT INTO memory_task_nodes (chat_id, user_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO memory_task_nodes (chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         node.chatId,
         node.userId,
+        node.taskId ?? null,
         node.nodeId,
         node.toolName ?? null,
         JSON.stringify(node.args ?? {}),
@@ -919,12 +1141,13 @@ export class SqliteMemoryBackend implements MemoryBackend {
 
       this.db
         .query(`
-          INSERT INTO memory_task_nodes (chat_id, user_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO memory_task_nodes (chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           nextNode.chatId,
           nextNode.userId,
+          nextNode.taskId ?? null,
           nextNode.nodeId,
           nextNode.toolName ?? null,
           JSON.stringify(nextNode.args ?? {}),
@@ -950,7 +1173,7 @@ export class SqliteMemoryBackend implements MemoryBackend {
   async listTaskGraphNodes(chatId: string, limit: number): Promise<TaskGraphNode[]> {
     const rows = this.db
       .query(`
-        SELECT id, chat_id, user_id, node_id, tool_name, args_json, summary, result_ref, status, created_at
+        SELECT id, chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at
         FROM memory_task_nodes
         WHERE chat_id = ?
         ORDER BY id DESC
@@ -960,6 +1183,7 @@ export class SqliteMemoryBackend implements MemoryBackend {
       id: number;
       chat_id: string;
       user_id: string;
+      task_id: number | null;
       node_id: string;
       tool_name: string | null;
       args_json: string;
@@ -973,6 +1197,7 @@ export class SqliteMemoryBackend implements MemoryBackend {
       id: row.id,
       chatId: row.chat_id,
       userId: row.user_id,
+      taskId: row.task_id ?? undefined,
       nodeId: row.node_id,
       toolName: row.tool_name ?? undefined,
       args: parseEventMeta(row.args_json),
@@ -980,6 +1205,145 @@ export class SqliteMemoryBackend implements MemoryBackend {
       resultRef: row.result_ref ?? undefined,
       status: row.status,
       createdAt: row.created_at,
+    }));
+  }
+
+  async listTaskGraphNodesForTask(taskId: number, limit: number): Promise<TaskGraphNode[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at
+        FROM memory_task_nodes
+        WHERE task_id = ?
+        ORDER BY id ASC
+        LIMIT ?
+      `)
+      .all(taskId, limit) as Array<{
+      id: number;
+      chat_id: string;
+      user_id: string;
+      task_id: number | null;
+      node_id: string;
+      tool_name: string | null;
+      args_json: string;
+      summary: string;
+      result_ref: string | null;
+      status: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      taskId: row.task_id ?? undefined,
+      nodeId: row.node_id,
+      toolName: row.tool_name ?? undefined,
+      args: parseEventMeta(row.args_json),
+      summary: row.summary,
+      resultRef: row.result_ref ?? undefined,
+      status: row.status,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async insertGeneratedSkill(skill: NewGeneratedSkill): Promise<GeneratedSkill> {
+    const createdAt = skill.createdAt ?? nowIso();
+    const updatedAt = skill.updatedAt ?? createdAt;
+    const status = skill.status ?? "draft";
+    const result = this.db
+      .query(`
+        INSERT INTO memory_generated_skills (
+          source_task_id, chat_id, user_id, skill_name, skill_description, skill_focus,
+          skill_file_path, source_canvas_file_path, source_node_ids_json, source_evidence_ids_json,
+          status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        skill.sourceTaskId,
+        skill.chatId,
+        skill.userId,
+        skill.skillName,
+        skill.skillDescription,
+        skill.skillFocus ?? null,
+        skill.skillFilePath,
+        skill.sourceCanvasFilePath,
+        JSON.stringify(skill.sourceNodeIds),
+        JSON.stringify(skill.sourceEvidenceIds),
+        status,
+        createdAt,
+        updatedAt,
+      );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      sourceTaskId: skill.sourceTaskId,
+      chatId: skill.chatId,
+      userId: skill.userId,
+      skillName: skill.skillName,
+      skillDescription: skill.skillDescription,
+      skillFocus: skill.skillFocus,
+      skillFilePath: skill.skillFilePath,
+      sourceCanvasFilePath: skill.sourceCanvasFilePath,
+      sourceNodeIds: skill.sourceNodeIds,
+      sourceEvidenceIds: skill.sourceEvidenceIds,
+      status,
+      createdAt,
+      updatedAt,
+    };
+  }
+
+  async countGeneratedSkills(userId: string): Promise<number> {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS count FROM memory_generated_skills WHERE user_id = ?`)
+      .get(userId) as { count: number } | null;
+
+    return row?.count ?? 0;
+  }
+
+  async listGeneratedSkills(userId: string, limit: number): Promise<GeneratedSkill[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, source_task_id, chat_id, user_id, skill_name, skill_description, skill_focus,
+          skill_file_path, source_canvas_file_path, source_node_ids_json, source_evidence_ids_json,
+          status, created_at, updated_at
+        FROM memory_generated_skills
+        WHERE user_id = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+      `)
+      .all(userId, limit) as Array<{
+      id: number;
+      source_task_id: number;
+      chat_id: string;
+      user_id: string;
+      skill_name: string;
+      skill_description: string;
+      skill_focus: string | null;
+      skill_file_path: string;
+      source_canvas_file_path: string;
+      source_node_ids_json: string;
+      source_evidence_ids_json: string;
+      status: GeneratedSkill["status"];
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      sourceTaskId: row.source_task_id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      skillName: row.skill_name,
+      skillDescription: row.skill_description,
+      skillFocus: row.skill_focus ?? undefined,
+      skillFilePath: row.skill_file_path,
+      sourceCanvasFilePath: row.source_canvas_file_path,
+      sourceNodeIds: parseStringArray(row.source_node_ids_json),
+      sourceEvidenceIds: parseStringArray(row.source_evidence_ids_json),
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     }));
   }
 

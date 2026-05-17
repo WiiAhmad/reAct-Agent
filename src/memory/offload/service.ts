@@ -11,9 +11,10 @@ type OffloadServiceOptions = {
 
 type FileWriter = (path: string, content: string) => Promise<void>;
 
-type OffloadToolResultInput = {
+export type OffloadToolResultInput = {
   chatId: string;
   userId: string;
+  taskId?: number;
   toolName: string;
   args: EventMeta;
   rawResult: string;
@@ -56,12 +57,13 @@ export class OffloadService {
         chatId: input.chatId,
         userId: input.userId,
         nodeId,
+        taskId: input.taskId,
         toolName: input.toolName,
         args: input.args,
         summary,
         status: "ok",
       });
-      await this.tryWriteTaskCanvas(input.chatId);
+      await this.tryWriteTaskCanvas(input.chatId, input.taskId);
       return { content: input.rawResult, offloaded: false, nodeId, summary };
     }
 
@@ -81,6 +83,7 @@ export class OffloadService {
     const offloadedNode = {
       chatId: input.chatId,
       userId: input.userId,
+      taskId: input.taskId,
       nodeId,
       toolName: input.toolName,
       args: input.args,
@@ -100,7 +103,7 @@ export class OffloadService {
       await this.backend.insertOffloadRefWithTaskGraphNode(ref, offloadedNode);
       metadataCommitted = true;
 
-      await this.writeTaskCanvas(input.chatId);
+      await this.writeTaskCanvas(input.chatId, input.taskId);
 
       return {
         content: [
@@ -126,12 +129,13 @@ export class OffloadService {
         chatId: input.chatId,
         userId: input.userId,
         nodeId,
+        taskId: input.taskId,
         toolName: input.toolName,
         args: input.args,
         summary,
         status: "fallback",
       });
-      await this.tryWriteTaskCanvas(input.chatId);
+      await this.tryWriteTaskCanvas(input.chatId, input.taskId);
 
       return {
         content: ["[offload-fallback]", `tool=${input.toolName}`, `summary=${summary}`].join("\n"),
@@ -166,16 +170,22 @@ export class OffloadService {
     ].join("\n");
   }
 
-  private async writeTaskCanvas(chatId: string): Promise<void> {
-    const nodes = await this.backend.listTaskGraphNodes(chatId, 40);
-    const canvasPath = await this.backend.getTaskCanvasPath(chatId);
-    await mkdir(dirname(canvasPath), { recursive: true });
-    await this.writeTextFile(canvasPath, `${this.buildTaskCanvas(chatId, nodes)}\n`);
+  private async writeTaskCanvas(chatId: string, taskId: number | undefined): Promise<void> {
+    if (!taskId) {
+      return;
+    }
+    const nodes = await this.backend.listTaskGraphNodesForTask(taskId, 80);
+    const canvasPath = await this.backend.getTaskCanvasFilePath(taskId);
+    if (!canvasPath) {
+      return;
+    }
+    await mkdir(dirname(canvasPath.absolutePath), { recursive: true });
+    await this.writeTextFile(canvasPath.absolutePath, `${this.buildTaskCanvas(chatId, nodes)}\n`);
   }
 
-  private async tryWriteTaskCanvas(chatId: string): Promise<void> {
+  private async tryWriteTaskCanvas(chatId: string, taskId: number | undefined): Promise<void> {
     try {
-      await this.writeTaskCanvas(chatId);
+      await this.writeTaskCanvas(chatId, taskId);
     } catch {
       // degrade safely when canvas persistence is unavailable
     }

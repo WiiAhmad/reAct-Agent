@@ -1,4 +1,5 @@
 import type { Api } from "grammy";
+import { config } from "../config";
 import type { MemoryServiceLike as MemoryService } from "../memory/core/service";
 import { currentDateTimeSnapshot } from "../utils/time";
 import { truncateText } from "../utils/text";
@@ -131,7 +132,7 @@ export function createLocalTools(memory: MemoryService, telegram?: Api): Registe
         additionalProperties: false,
       },
       async execute() {
-        return JSON.stringify(currentDateTimeSnapshot());
+        return JSON.stringify(currentDateTimeSnapshot(new Date(), { timezone: config.app.timezone, locale: config.app.locale }));
       },
     },
     {

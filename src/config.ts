@@ -29,6 +29,11 @@ function intEnv(source: ConfigSource, name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function enumEnv<const T extends string>(source: ConfigSource, name: string, fallback: T, allowed: readonly T[]): T {
+  const raw = env(source, name, fallback);
+  return allowed.includes(raw as T) ? (raw as T) : fallback;
+}
+
 export function parseConfig(source: ConfigSource) {
   const dataDir = resolvePath(env(source, "DATA_DIR", "./data"));
   const dbPath = resolvePath(env(source, "DB_PATH", `${dataDir}/agent.db`));
@@ -38,8 +43,14 @@ export function parseConfig(source: ConfigSource) {
   const memoryRefsDir = resolvePath(`${memoryDir}/refs`);
   const memoryCanvasDir = resolvePath(`${memoryDir}/canvases`);
   const memoryJsonlExportDir = resolvePath(env(source, "MEMORY_JSONL_EXPORT_DIR", `${memoryDir}/jsonl`));
+  const memoryTaskCanvasDir = resolvePath(env(source, "MEMORY_TASK_CANVAS_DIR", `${memoryDir}/task-canvases`));
+  const memoryGeneratedSkillsDir = resolvePath(env(source, "MEMORY_L4_SKILLS_DIR", `${memoryDir}/skills`));
 
   return {
+    app: {
+      timezone: env(source, "APP_TIMEZONE", "Asia/Jakarta"),
+      locale: env(source, "APP_LOCALE", "id-ID"),
+    },
     telegram: {
       botToken: env(source, "BOT_TOKEN"),
     },
@@ -68,6 +79,8 @@ export function parseConfig(source: ConfigSource) {
       memoryRefsDir,
       memoryCanvasDir,
       memoryJsonlExportDir,
+      memoryTaskCanvasDir,
+      memoryGeneratedSkillsDir,
     },
     memory: {
       maintenanceCron: env(source, "MEMORY_MAINTENANCE_CRON", "*/10 * * * *"),
@@ -77,6 +90,22 @@ export function parseConfig(source: ConfigSource) {
       offloadSummaryChars: intEnv(source, "MEMORY_OFFLOAD_SUMMARY_CHARS", 900),
       sqliteVecEnabled: boolEnv(source, "MEMORY_SQLITE_VEC_ENABLED", true),
       jsonlExportEnabled: boolEnv(source, "MEMORY_JSONL_EXPORT_ENABLED", false),
+      l15: {
+        enabled: boolEnv(source, "MEMORY_L15_ENABLED", true),
+        mode: enumEnv(source, "MEMORY_L15_MODE", "hybrid", ["rules", "llm", "hybrid"]),
+        recentMessages: intEnv(source, "MEMORY_L15_RECENT_MESSAGES", 6),
+        historyTaskLimit: intEnv(source, "MEMORY_L15_HISTORY_TASK_LIMIT", 10),
+        maxCanvasChars: intEnv(source, "MEMORY_L15_MAX_CANVAS_CHARS", 12000),
+        safeFallback: enumEnv(source, "MEMORY_L15_SAFE_FALLBACK", "short", ["short"]),
+      },
+      l4: {
+        enabled: boolEnv(source, "MEMORY_L4_ENABLED", true),
+        mode: enumEnv(source, "MEMORY_L4_MODE", "local", ["local"]),
+        requireCompletedTask: boolEnv(source, "MEMORY_L4_REQUIRE_COMPLETED_TASK", false),
+        maxEvidenceEntries: intEnv(source, "MEMORY_L4_MAX_EVIDENCE_ENTRIES", 80),
+        maxCanvasChars: intEnv(source, "MEMORY_L4_MAX_CANVAS_CHARS", 20000),
+        maxSkillChars: intEnv(source, "MEMORY_L4_MAX_SKILL_CHARS", 20000),
+      },
     },
     autonomous: {
       cron: env(source, "AUTONOMOUS_CRON", "*/10 * * * *"),
@@ -100,6 +129,8 @@ for (const dir of [
   config.storage.memoryRefsDir,
   config.storage.memoryCanvasDir,
   config.storage.memoryJsonlExportDir,
+  config.storage.memoryTaskCanvasDir,
+  config.storage.memoryGeneratedSkillsDir,
   dirname(config.storage.dbPath),
 ]) {
   mkdirSync(dir, { recursive: true });
@@ -129,6 +160,10 @@ export function getRuntimeConfigSummary() {
   const activeApiKey = config.llm.provider === "anthropic" ? config.llm.anthropic.apiKey : config.llm.openai.apiKey;
 
   return {
+    app: {
+      timezone: config.app.timezone,
+      locale: config.app.locale,
+    },
     telegram: {
       hasBotToken: Boolean(config.telegram.botToken),
     },
@@ -146,10 +181,24 @@ export function getRuntimeConfigSummary() {
       tickCron: config.scheduler.tickCron,
       maxItemsPerTick: config.scheduler.maxItemsPerTick,
     },
+    storage: {
+      dataDir: config.storage.dataDir,
+      dbPath: config.storage.dbPath,
+      historyDir: config.storage.historyDir,
+      memoryDir: config.storage.memoryDir,
+      memoryScenarioDir: config.storage.memoryScenarioDir,
+      memoryRefsDir: config.storage.memoryRefsDir,
+      memoryCanvasDir: config.storage.memoryCanvasDir,
+      memoryJsonlExportDir: config.storage.memoryJsonlExportDir,
+      memoryTaskCanvasDir: config.storage.memoryTaskCanvasDir,
+      memoryGeneratedSkillsDir: config.storage.memoryGeneratedSkillsDir,
+    },
     memory: {
       maintenanceCron: config.memory.maintenanceCron,
       sqliteVecEnabled: config.memory.sqliteVecEnabled,
       jsonlExportEnabled: config.memory.jsonlExportEnabled,
+      l15: config.memory.l15,
+      l4: config.memory.l4,
     },
   };
 }

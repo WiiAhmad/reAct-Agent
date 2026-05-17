@@ -1,5 +1,6 @@
 import { expect, mock, test } from "bun:test";
 import { createLocalTools } from "../../src/tools/local";
+import { currentDateTimeSnapshot } from "../../src/utils/time";
 
 function createMemoryServiceDouble() {
   return {
@@ -42,8 +43,14 @@ test("tool surface stays stable while calling MemoryService", async () => {
     iso_timestamp: expect.any(String),
     unix_timestamp: expect.any(Number),
     readable_local_datetime: expect.any(String),
-    timezone: expect.any(String),
-    offset_minutes: expect.any(Number),
+    timezone: "Asia/Jakarta",
+    offset_minutes: 420,
+    locale: "id-ID",
+    local_date: expect.any(String),
+    local_time: expect.any(String),
+    weekday_local: expect.any(String),
+    weekday_en: expect.any(String),
+    iso_weekday: expect.any(Number),
   });
 
   const saveMemory = tools.find((tool) => tool.name === "save_memory");
@@ -62,6 +69,25 @@ test("tool surface stays stable while calling MemoryService", async () => {
     importance: 4,
     sourceLayer: "L1",
   });
+});
+
+test("currentDateTimeSnapshot formats deterministic snapshots with timezone and locale", () => {
+  const snapshot = currentDateTimeSnapshot(new Date("2026-05-17T18:14:45.815Z"), {
+    timezone: "Asia/Jakarta",
+    locale: "id-ID",
+  });
+
+  expect(snapshot.iso_timestamp).toBe("2026-05-17T18:14:45.815Z");
+  expect(snapshot.unix_timestamp).toBe(1779041685);
+  expect(snapshot.timezone).toBe("Asia/Jakarta");
+  expect(snapshot.offset_minutes).toBe(420);
+  expect(snapshot.locale).toBe("id-ID");
+  expect(snapshot.local_date).toBe("2026-05-18");
+  expect(snapshot.local_time).toBe("01:14:45");
+  expect(snapshot.weekday_local.toLowerCase()).toBe("senin");
+  expect(snapshot.weekday_en).toBe("Monday");
+  expect(snapshot.iso_weekday).toBe(1);
+  expect(snapshot.readable_local_datetime.toLowerCase()).toContain("senin");
 });
 
 test("memory-backed tools use ctx.memory instead of the factory capture", async () => {

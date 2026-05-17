@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
@@ -45,6 +45,101 @@ test("SQLite backend stores interaction events, optional JSONL exports, L0 turns
     expect(jsonl).toContain('"type":"user_message"');
     expect(events.some((event) => event.type === "tool_result")).toBe(true);
     expect(await backend.getCheckpoint("u1", "l1_last_conversation_id")).toBe("1");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite backend stores task offload pipeline records", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+      taskCanvasDir: join(tempDir, "memory", "task-canvases"),
+    });
+    await backend.init();
+
+    const task = await backend.createTaskCanvas({
+      chatId: "chat/one",
+      userId: "u1",
+      label: "Build Skill!",
+    });
+
+    expect(task.status).toBe("active");
+    expect(task.filePath).toStartWith("memory/task-canvases/chat_one/");
+    expect(task.filePath).toEndWith("-build-skill.mmd");
+    expect(await readFile(join(tempDir, task.filePath), "utf8")).toContain("graph LR");
+    expect(await backend.getActiveTaskCanvas("u1", "chat/one")).toEqual(task);
+
+    const boundary = await backend.insertTaskBoundary({
+      chatId: "chat/one",
+      userId: "u1",
+      startNodeSequence: 7,
+      result: "long",
+      taskId: task.id,
+    });
+    expect(boundary.taskId).toBe(task.id);
+    expect(boundary.result).toBe("long");
+
+    const judgment = await backend.recordL15Judgment({
+      chatId: "chat/one",
+      userId: "u1",
+      sourceConversationId: 12,
+      taskCompleted: false,
+      isLongTask: true,
+      isContinuation: true,
+      selectedTaskId: task.id,
+      source: "rules",
+    });
+    expect(judgment.selectedTaskId).toBe(task.id);
+    expect(judgment.sourceConversationId).toBe(12);
+
+    await backend.insertTaskGraphNode({
+      chatId: "chat/one",
+      userId: "u1",
+      nodeId: "node-1",
+      toolName: "demo_tool",
+      args: { ok: true },
+      summary: "did work",
+      status: "offloaded",
+      taskId: task.id,
+    });
+    const taskNodes = await backend.listTaskGraphNodesForTask(task.id, 10);
+    expect(taskNodes).toEqual([
+      expect.objectContaining({
+        nodeId: "node-1",
+        taskId: task.id,
+      }),
+    ]);
+
+    const skill = await backend.insertGeneratedSkill({
+      sourceTaskId: task.id,
+      chatId: "chat/one",
+      userId: "u1",
+      skillName: "demo-skill",
+      skillDescription: "Demo skill",
+      skillFocus: "offload",
+      skillFilePath: "skills/demo-skill/SKILL.md",
+      sourceCanvasFilePath: task.filePath,
+      sourceNodeIds: ["node-1"],
+      sourceEvidenceIds: ["evidence-1"],
+      status: "draft",
+    });
+
+    expect(skill.sourceNodeIds).toEqual(["node-1"]);
+    expect(await backend.countGeneratedSkills("u1")).toBe(1);
+    expect(await backend.listGeneratedSkills("u1", 10)).toEqual([
+      expect.objectContaining({
+        id: skill.id,
+        sourceEvidenceIds: ["evidence-1"],
+      }),
+    ]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

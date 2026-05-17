@@ -11,6 +11,7 @@ export function buildRichMemorySummary(input: {
     taskCanvas?: string;
   };
   memoryUpdateSummary: string;
+  generatedSkillCount?: number;
 }): string {
   const persona = input.recall.persona?.trim() || "Belum ada L3 persona.";
   const scenarios = input.recall.scenarios.length
@@ -39,6 +40,9 @@ export function buildRichMemorySummary(input: {
     "",
     "# Memory Update summary",
     input.memoryUpdateSummary.trim(),
+    "",
+    "# Skill drafts",
+    `Generated drafts: ${input.generatedSkillCount ?? 0}`,
   ]);
 }
 
@@ -70,7 +74,7 @@ export function renderHelpScreen(): string {
     "/menu - buka menu utama",
     "/help - tampilkan bantuan ini",
     "",
-    "Memory Update dan Jobs tersedia dari menu, bukan lewat command tambahan.",
+    "Memory Update, Skill Drafts, dan Jobs tersedia dari menu, bukan lewat command tambahan.",
   ]);
 }
 
@@ -79,6 +83,18 @@ export function renderMemorySummaryScreen(summary: string): string {
     "Memory summary",
     "",
     "Memory Update dikelola dari menu.",
+    "",
+    summary.trim(),
+  ]);
+}
+
+export function renderSkillDraftScreen(summary: string): string {
+  return normalizeLines([
+    "Skill Drafts",
+    "",
+    "Generate draft skill dari task canvas yang sudah tercatat.",
+    "Draft tidak otomatis di-install atau di-commit.",
+    "Pilih Generate Draft Skill untuk memilih task canvas dan fokus opsional.",
     "",
     summary.trim(),
   ]);
