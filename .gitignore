@@ -8,3 +8,4 @@ data/memory/**/*.md
 .DS_Store
 data/*
 TencentDB-Agent-Memory
+dist
