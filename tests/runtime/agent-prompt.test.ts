@@ -23,5 +23,9 @@ test("shared system prompt reflects the Telegram menu runtime", () => {
   expect(prompt).toContain("L1.5");
   expect(prompt).toContain("L4 draft skills");
   expect(prompt).toContain("menu/review flows");
+  expect(prompt).toContain("canonical chat JSONL");
+  expect(prompt).toContain("L1 semantic evidence summaries");
+  expect(prompt).toContain("L2 Mermaid task canvases");
+  expect(prompt).toContain("task-aware recall");
   expect(prompt).toContain("concise");
 });

@@ -239,3 +239,71 @@ test("agent runtime passes tool call id into semantic L1 offload", async () => {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("agent runtime includes relevant historical task canvases in memory context", async () => {
+  let seenMessages: Array<{ role: string; content?: string }> = [];
+  const llm = {
+    async complete({ messages }: { messages: Array<{ role: string; content?: string }> }) {
+      seenMessages = messages;
+      return { content: "Done", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: false,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+      },
+    });
+
+    const createdAt = "2026-05-18T00:00:00.000Z";
+    const insert = db
+      .query(`
+        INSERT INTO memory_task_canvases (chat_id, user_id, label, file_path, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run("c1", "u1", "token-refresh-investigation", "memory/task-canvases/c1/task-1.mmd", "completed", createdAt, createdAt) as { lastInsertRowid: number | bigint };
+    const canvas = "flowchart TD\n  T[\"Token refresh branch fixed\"]\n";
+    db
+      .query(`
+        INSERT INTO memory_task_canvas_fts (label, canvas, task_id, chat_id, user_id, status, file_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run("token-refresh-investigation", canvas, String(insert.lastInsertRowid), "c1", "u1", "completed", "memory/task-canvases/c1/task-1.mmd");
+
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await runReactAgent({ chatId: "c1", userId: "u1", input: "what did we learn about token refresh?", memory, registry, llm: llm as any, mode: "chat" });
+
+    const memoryContext = seenMessages.find((message) => message.role === "system" && message.content?.includes("Relevant layered memory snapshot"))?.content ?? "";
+    expect(memoryContext).toContain("Relevant historical task canvases");
+    expect(memoryContext).toContain("token-refresh-investigation");
+    expect(memoryContext).toContain("Token refresh branch fixed");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

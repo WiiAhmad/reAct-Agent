@@ -4,7 +4,7 @@ import type { AgentMessage, LlmProvider } from "../../agent/types";
 import { generateL4Skill, validateGeneratedSkill, writeDraftSkill } from "../offload/l4";
 import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "./backend";
-import type { ConversationTurnRole, EventMeta, InteractionEvent, TaskCanvas } from "./types";
+import type { ConversationTurnRole, EventMeta, InteractionEvent, TaskCanvas, TaskCanvasRecall } from "./types";
 import { InteractionLogService } from "../events/service";
 import { OffloadService, type OffloadToolResult } from "../offload/service";
 import { runL15Judgment } from "../offload/l15";
@@ -19,6 +19,7 @@ export type MemoryServiceRecall = {
   scenarios: Array<{ id: number; title: string; body_markdown?: string; bodyMarkdown?: string }>;
   conversations: Array<{ id: number; role: string; content: string; created_at?: string; createdAt?: string }>;
   taskCanvas?: string;
+  taskCanvases: TaskCanvasRecall[];
 };
 
 export type SaveMemoryInput = {
@@ -135,7 +136,7 @@ export class MemoryService {
     backend: MemoryBackend,
     llm: LlmProvider,
     options: MemoryServiceOptions,
-    recallService = new RecallService(backend),
+    recallService = new RecallService(backend, options.taskRecall),
     offloadService = new OffloadService(backend, {
       offloadMinChars: 2500,
       offloadSummaryChars: 900,
@@ -183,6 +184,7 @@ export class MemoryService {
         created_at: conversation.created_at,
       })),
       taskCanvas: recall.taskCanvas,
+      taskCanvases: recall.taskCanvases,
     };
   }
 
@@ -261,6 +263,9 @@ export class MemoryService {
       `offload_enabled=${options.offloadEnabled}`,
       `L1.5 enabled=${options.l15.enabled}`,
       `L1.5 mode=${options.l15.mode}`,
+      `L1 semantic evidence=${options.l1.enabled ? options.l1.mode : "disabled"}`,
+      `L2 semantic Mermaid=${options.l2.enabled ? options.l2.mode : "disabled"}`,
+      `Task-aware recall=${options.taskRecall.enabled ? `max_tasks=${options.taskRecall.maxTasks}` : "disabled"}`,
       `L4 enabled=${options.l4.enabled}`,
       `generated_skill_drafts=${generatedSkillCount}`,
       `task_canvas=${resolvedTaskCanvasPath ?? "none"}`,

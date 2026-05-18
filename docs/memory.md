@@ -21,6 +21,17 @@ The context-offload path is separate from durable memory maintenance:
 
 L1.5 decides whether a turn belongs to a long-running task, continues an existing task, closes one, or should stay short-term only. Task-scoped L2 Mermaid canvases summarize evidence for active tasks without changing durable L1/L2/L3 maintenance semantics.
 
+### TencentDB-style semantic offload completion
+
+Short-term task context now uses four inspectable layers:
+
+1. **Canonical chat JSONL** stores raw transcript rows in `data/history/<chatId>.jsonl` using `{id, chat_id, user_id, role, content, meta, created_at}`.
+2. **L1 semantic evidence** stores each tool result as a compact progress/blocker/verification summary in SQLite and mirrors it to `data/memory/jsonl/l1/<chat>.jsonl`.
+3. **L2 semantic Mermaid patching** consumes task-routed L1 evidence and writes task-scoped `.mmd` canvases under `data/memory/task-canvases/`.
+4. **Task-aware recall** searches active and historical task canvases and injects relevant Mermaid snippets into the chat context.
+
+SQLite remains authoritative for memory/offload indexes, while raw chat transcript history is JSONL-only. The durable memory pipeline remains `L0 JSONL conversations -> L1 atoms -> L2 scenarios -> L3 persona`.
+
 ## What Memory Update means
 
 Memory Update is the Telegram-managed workflow for durable memory maintenance.

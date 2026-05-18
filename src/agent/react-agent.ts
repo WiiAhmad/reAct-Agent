@@ -43,6 +43,13 @@ function formatRecall(recall: Awaited<ReturnType<MemoryService["recall"]>>): str
   if (recall.taskCanvas) {
     sections.push(`## Active Mermaid task canvas\n\`\`\`mermaid\n${truncateText(recall.taskCanvas, 2200)}\n\`\`\``);
   }
+  if (recall.taskCanvases.length) {
+    sections.push(
+      `## Relevant historical task canvases\n${recall.taskCanvases
+        .map((task) => `### Task #${task.id}: ${task.label} (${task.status})\nfile_path=${task.filePath}\n\`\`\`mermaid\n${truncateText(task.canvas, 2200)}\n\`\`\``)
+        .join("\n\n")}`,
+    );
+  }
   return sections.join("\n\n") || "No prior memory found.";
 }
 
@@ -103,6 +110,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
       conversations: recall.conversations.length,
       hasPersona: Boolean(recall.persona),
       hasCanvas: Boolean(recall.taskCanvas),
+      taskCanvases: recall.taskCanvases.length,
     },
   });
 

@@ -1,15 +1,17 @@
 import { expect, mock, test } from "bun:test";
 import { createLocalTools } from "../../src/tools/local";
+import type { TaskCanvasRecall } from "../../src/memory/core/types";
 import { currentDateTimeSnapshot } from "../../src/utils/time";
 
 function createMemoryServiceDouble() {
   return {
     recall: mock(async () => ({
-      persona: "- Uses Bun",
+      persona: "- Uses Bun" as string | undefined,
       atoms: [],
       scenarios: [],
       conversations: [],
       taskCanvas: undefined,
+      taskCanvases: [] as TaskCanvasRecall[],
       fallbackChain: [],
     })),
     searchConversations: mock(async () => "#1 [2026-05-17] user: remember Bun"),
@@ -69,6 +71,38 @@ test("tool surface stays stable while calling MemoryService", async () => {
     importance: 4,
     sourceLayer: "L1",
   });
+});
+
+test("memory search tool renders relevant historical task canvases", async () => {
+  const memory = createMemoryServiceDouble();
+  memory.recall.mockResolvedValueOnce({
+    persona: undefined,
+    atoms: [],
+    scenarios: [],
+    conversations: [],
+    taskCanvas: undefined,
+    taskCanvases: [{
+      id: 7,
+      chatId: "c1",
+      userId: "u1",
+      label: "token-refresh-investigation",
+      filePath: "memory/task-canvases/c1/task-7.mmd",
+      status: "completed",
+      createdAt: "2026-05-18T00:00:00.000Z",
+      updatedAt: "2026-05-18T00:00:00.000Z",
+      canvas: "flowchart TD\n  T[\"Token refresh branch fixed\"]\n",
+    }],
+    fallbackChain: [],
+  });
+
+  const tools = createLocalTools(memory as any);
+  const search = tools.find((tool) => tool.name === "tdai_memory_search");
+
+  const output = await search!.execute({ query: "token refresh" }, { chatId: "c1", userId: "u1", memory: memory as any });
+
+  expect(output).toContain("## Relevant Task Canvases");
+  expect(output).toContain("token-refresh-investigation");
+  expect(output).toContain("Token refresh branch fixed");
 });
 
 test("currentDateTimeSnapshot formats deterministic snapshots with timezone and locale", () => {

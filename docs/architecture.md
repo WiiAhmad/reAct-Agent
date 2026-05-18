@@ -67,6 +67,16 @@ Context offload handles high-volume working context:
 - task-scoped L2 Mermaid canvas files summarize evidence for active tasks without rewriting durable scenarios.
 - L4 draft skill generation turns reviewed task canvases and linked evidence into project-local draft skills through menu/review flows.
 
+```text
+chat turn/tool result
+-> canonical chat JSONL (data/history/<chatId>.jsonl)
+-> L1 semantic evidence summary (SQLite + JSONL)
+-> L1.5 task judgment
+-> L2 semantic Mermaid patch (.mmd + SQLite FTS)
+-> task-aware recall
+-> optional L4 draft skill generation
+```
+
 ## Data ownership
 
 All durable state is stored in the project-owned backend. The runtime no longer depends on the old vendor-specific memory workflow for its primary behavior.

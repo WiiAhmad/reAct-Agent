@@ -113,7 +113,7 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
   });
   await backend.init();
 
-  const recallService = new RecallService(backend);
+  const recallService = new RecallService(backend, taskRecall);
   const interactionLogService = new InteractionLogService(backend, {
     enabled: config.memory.jsonlExportEnabled,
     exportDir: config.storage.memoryJsonlExportDir,

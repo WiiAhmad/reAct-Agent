@@ -50,7 +50,7 @@ function createBotHarness() {
   const deps = {
     memory: {
       memoryStatus: async () => "status",
-      recall: async () => ({ persona: "Persona", atoms: [], scenarios: [], taskCanvas: null }),
+      recall: async () => ({ persona: "Persona", atoms: [], scenarios: [], taskCanvas: null, taskCanvases: [] }),
       countGeneratedSkills: async () => 0,
       listTaskCanvases: async () => [{ id: 1, label: "Task canvas" }],
       generateSkillDraft: async () => ({ ok: true, skillName: "draft-skill", filePath: "generated/draft.md" }),

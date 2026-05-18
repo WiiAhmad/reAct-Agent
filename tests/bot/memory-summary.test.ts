@@ -42,6 +42,10 @@ test("rich memory summary includes status, persona, scenarios, atoms, canvas, an
   expect(summary).toContain("Memory update settings for user-1");
   expect(summary).toContain("# Skill drafts");
   expect(summary).toContain("Generated drafts: 2");
+  expect(summary).toContain("Canonical chat JSONL");
+  expect(summary).toContain("L1 semantic evidence");
+  expect(summary).toContain("L2 semantic Mermaid");
+  expect(summary).toContain("Task-aware recall");
 });
 
 test("memory status includes context-offload settings and generated skill count", async () => {
@@ -104,7 +108,7 @@ test("memory status includes context-offload settings and generated skill count"
 
   expect(status).toContain("backend=sqlite");
   expect(status).toContain("owner=test-owner");
-  expect(status).toContain("L0 conversations=4");
+  expect(status).toContain("L0 conversations=0");
   expect(status).toContain("L1 atoms=3");
   expect(status).toContain("L2 scenarios=2");
   expect(status).toContain("L3 persona=yes");
@@ -112,6 +116,9 @@ test("memory status includes context-offload settings and generated skill count"
   expect(status).toContain("offload_enabled=true");
   expect(status).toContain("L1.5 enabled=true");
   expect(status).toContain("L1.5 mode=hybrid");
+  expect(status).toContain("L1 semantic evidence=local");
+  expect(status).toContain("L2 semantic Mermaid=disabled");
+  expect(status).toContain("Task-aware recall=max_tasks=3");
   expect(status).toContain("L4 enabled=true");
   expect(status).toContain("generated_skill_drafts=5");
   expect(status).toContain("task_canvas=memory/task-canvases/chat-1/task-7.mmd");

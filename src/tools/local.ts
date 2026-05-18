@@ -30,7 +30,7 @@ export function createLocalTools(memory: MemoryService, telegram?: Api): Registe
     {
       name: "tdai_memory_search",
       source: "local",
-      description: "Search the project-owned memory backend across L3 persona, L2 scenarios, L1 atoms, L0 evidence, and the active task canvas.",
+      description: "Search the project-owned memory backend across L3 persona, L2 scenarios, L1 atoms, L0 evidence, and active or historical task canvases.",
       inputSchema: {
         type: "object",
         properties: {
@@ -50,6 +50,11 @@ export function createLocalTools(memory: MemoryService, telegram?: Api): Registe
         if (recall.atoms.length) parts.push(`## L1 Atoms\n${recall.atoms.map((a) => `- atom_id=${a.id} importance=${a.importance}: ${a.text}`).join("\n")}`);
         if (recall.conversations.length) parts.push(`## L0 Conversations\n${recall.conversations.map((c) => `- turn_id=${c.id} ${conversationCreatedAt(c)} ${c.role}: ${truncateText(c.content, 500)}`).join("\n")}`);
         if (recall.taskCanvas) parts.push(`## Active Mermaid Canvas\n\`\`\`mermaid\n${truncateText(recall.taskCanvas, 1800)}\n\`\`\``);
+        if (recall.taskCanvases.length) {
+          parts.push(`## Relevant Task Canvases\n${recall.taskCanvases
+            .map((task) => `### #${task.id} ${task.label} (${task.status})\nfile_path=${task.filePath}\n\`\`\`mermaid\n${truncateText(task.canvas, 1800)}\n\`\`\``)
+            .join("\n\n")}`);
+        }
         return parts.length ? parts.join("\n\n") : "No relevant memory found.";
       },
     },

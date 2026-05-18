@@ -14,6 +14,10 @@ test("README reflects the current Telegram runtime", () => {
   expect(readme).toContain("task-scoped Mermaid canvases");
   expect(readme).toContain("L4 draft skill generation");
   expect(readme).toContain("Skill Drafts");
+  expect(readme).toContain("canonical chat JSONL");
+  expect(readme).toContain("L1 semantic evidence");
+  expect(readme).toContain("L2 semantic Mermaid patching");
+  expect(readme).toContain("task-aware recall");
   expect(readme).toContain("configured timezone/locale");
   expect(readme).toContain("weekday");
   expect(readme).not.toContain("/memory_force");

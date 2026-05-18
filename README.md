@@ -88,6 +88,13 @@ The memory backend is project-owned and keeps the existing layered model:
 
 Those durable semantics stay unchanged. The context-offload pipeline is separate: offloaded L1 evidence summaries are routed through L1.5 task judgment, captured in task-scoped Mermaid canvases, and can later feed L4 draft skill generation.
 
+Short-term task context now uses:
+
+- canonical chat JSONL in `data/history/<chatId>.jsonl` for raw transcript rows
+- L1 semantic evidence stored in SQLite and mirrored to JSONL
+- L2 semantic Mermaid patching into task-scoped `.mmd` canvases
+- task-aware recall for active and relevant historical task canvases
+
 Skill Drafts is a Telegram menu flow for reviewing task canvases and generating draft skills under project storage. Drafts are not auto-installed globally.
 
 ## Key files
