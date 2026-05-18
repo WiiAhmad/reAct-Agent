@@ -1,12 +1,27 @@
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+import type { LlmProvider } from "../../agent/types";
 import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "../core/backend";
 import type { EventMeta } from "../core/types";
+import { generateL1EvidenceSummary } from "./l1";
 
 type OffloadServiceOptions = {
   offloadMinChars: number;
   offloadSummaryChars: number;
+  l1: {
+    enabled: boolean;
+    mode: "local";
+    maxSummaryChars: number;
+    defaultScore: number;
+  };
+  l2: {
+    enabled: boolean;
+    mode: "local";
+    triggerMinEntries: number;
+    maxCanvasChars: number;
+  };
+  jsonlEnabled: boolean;
 };
 
 type FileWriter = (path: string, content: string) => Promise<void>;
@@ -15,6 +30,7 @@ export type OffloadToolResultInput = {
   chatId: string;
   userId: string;
   taskId?: number;
+  toolCallId?: string;
   toolName: string;
   args: EventMeta;
   rawResult: string;
@@ -44,11 +60,24 @@ export class OffloadService {
   constructor(
     private readonly backend: MemoryBackend,
     private readonly options: OffloadServiceOptions,
+    private readonly llm: LlmProvider,
     private readonly writeTextFile: FileWriter = (path, content) => writeFile(path, content, "utf8"),
   ) {}
 
   async offloadToolResult(input: OffloadToolResultInput): Promise<OffloadToolResult> {
-    const summary = summarize(input.rawResult, this.options.offloadSummaryChars);
+    const semantic = this.options.l1.enabled
+      ? await generateL1EvidenceSummary(this.llm, {
+          toolName: input.toolName,
+          toolCallId: input.toolCallId,
+          args: input.args,
+          rawResult: input.rawResult,
+          maxSummaryChars: this.options.l1.maxSummaryChars,
+          defaultScore: this.options.l1.defaultScore,
+        })
+      : { summary: summarize(input.rawResult, this.options.offloadSummaryChars), score: this.options.l1.defaultScore };
+    const summary = semantic.summary;
+    const score = semantic.score;
+    const createdAt = new Date().toISOString();
     const shouldOffload = input.rawResult.length >= this.options.offloadMinChars;
 
     if (!shouldOffload) {
@@ -59,10 +88,14 @@ export class OffloadService {
         nodeId,
         taskId: input.taskId,
         toolName: input.toolName,
+        toolCallId: input.toolCallId,
         args: input.args,
         summary,
+        score,
         status: "ok",
+        createdAt,
       });
+      await this.persistL1Evidence(input, nodeId, summary, undefined, score, createdAt);
       await this.tryWriteTaskCanvas(input.chatId, input.taskId);
       return { content: input.rawResult, offloaded: false, nodeId, summary };
     }
@@ -79,6 +112,7 @@ export class OffloadService {
       title: `Tool result ${input.toolName}`,
       filePath: relativePath,
       summary,
+      createdAt,
     };
     const offloadedNode = {
       chatId: input.chatId,
@@ -86,10 +120,13 @@ export class OffloadService {
       taskId: input.taskId,
       nodeId,
       toolName: input.toolName,
+      toolCallId: input.toolCallId,
       args: input.args,
       summary,
       resultRef: relativePath,
+      score,
       status: "offloaded",
+      createdAt,
     } as const;
 
     let refWritten = false;
@@ -104,20 +141,6 @@ export class OffloadService {
       metadataCommitted = true;
 
       await this.writeTaskCanvas(input.chatId, input.taskId);
-
-      return {
-        content: [
-          "[memory-offload]",
-          `node_id=${nodeId}`,
-          `result_ref=${relativePath}`,
-          `tool=${input.toolName}`,
-          `summary=${summary}`,
-        ].join("\n"),
-        offloaded: true,
-        nodeId,
-        resultRef: relativePath,
-        summary,
-      };
     } catch {
       if (metadataCommitted) {
         await this.tryDeleteOffloadMetadata(nodeId);
@@ -131,10 +154,14 @@ export class OffloadService {
         nodeId,
         taskId: input.taskId,
         toolName: input.toolName,
+        toolCallId: input.toolCallId,
         args: input.args,
         summary,
+        score,
         status: "fallback",
+        createdAt,
       });
+      await this.persistL1Evidence(input, nodeId, summary, undefined, score, createdAt);
       await this.tryWriteTaskCanvas(input.chatId, input.taskId);
 
       return {
@@ -144,6 +171,78 @@ export class OffloadService {
         summary,
       };
     }
+
+    await this.persistL1Evidence(input, nodeId, summary, relativePath, score, createdAt);
+
+    return {
+      content: [
+        "[memory-offload]",
+        `node_id=${nodeId}`,
+        `result_ref=${relativePath}`,
+        `tool=${input.toolName}`,
+        `summary=${summary}`,
+      ].join("\n"),
+      offloaded: true,
+      nodeId,
+      resultRef: relativePath,
+      summary,
+    };
+  }
+
+  private async persistL1Evidence(
+    input: OffloadToolResultInput,
+    nodeId: string,
+    summary: string,
+    resultRef: string | undefined,
+    score: number,
+    createdAt: string,
+  ): Promise<void> {
+    await this.backend.insertL1EvidenceEntry({
+      chatId: input.chatId,
+      userId: input.userId,
+      taskId: input.taskId,
+      nodeId,
+      toolCallId: input.toolCallId,
+      toolName: input.toolName,
+      args: input.args,
+      summary,
+      resultRef,
+      score,
+      status: input.taskId ? "pending" : "mapped",
+      createdAt,
+    });
+    await this.writeL1Jsonl({
+      chatId: input.chatId,
+      userId: input.userId,
+      taskId: input.taskId,
+      nodeId,
+      toolCallId: input.toolCallId,
+      toolName: input.toolName,
+      summary,
+      resultRef,
+      score,
+      createdAt,
+    });
+  }
+
+  private async writeL1Jsonl(input: {
+    chatId: string;
+    userId: string;
+    taskId?: number;
+    nodeId: string;
+    toolCallId?: string;
+    toolName: string;
+    summary: string;
+    resultRef?: string;
+    score: number;
+    createdAt: string;
+  }): Promise<void> {
+    if (!this.options.jsonlEnabled) {
+      return;
+    }
+    const jsonlPath = await this.backend.getL1EvidenceJsonlPath(input.chatId);
+    await mkdir(dirname(jsonlPath.absolutePath), { recursive: true });
+    await appendFile(jsonlPath.absolutePath, `${JSON.stringify({ type: "l1_evidence", ...input })}\n`, "utf8");
   }
 
   private buildRefMarkdown(nodeId: string, input: OffloadToolResultInput, summary: string): string {

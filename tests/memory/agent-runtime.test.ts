@@ -183,3 +183,59 @@ test("agent runtime keeps current datetime one-shot question out of task canvas 
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("agent runtime passes tool call id into semantic L1 offload", async () => {
+  const llmCalls: Array<Array<{ role: string; content?: string }>> = [];
+  const llm = {
+    async complete({ messages }: { messages: Array<{ role: string; content?: string }> }) {
+      llmCalls.push(messages);
+      if (llmCalls.length === 1) {
+        return { content: "I will inspect time.", toolCalls: [{ id: "call_time", name: "tdai_current_datetime", arguments: {} }] };
+      }
+      if (messages.some((message) => message.content?.includes("semantic L1 evidence summary"))) {
+        return { content: JSON.stringify({ summary: "Resolved current datetime with explicit weekday fields.", score: 8 }), toolCalls: [] };
+      }
+      return { content: "Done", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: true,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+      },
+    });
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await runReactAgent({ chatId: "c-time", userId: "u1", input: "sekarang hari apa?", memory, registry, llm: llm as any, mode: "chat" });
+
+    const rows = db.query(`SELECT tool_call_id FROM memory_l1_evidence_entries ORDER BY id ASC`).all() as Array<{ tool_call_id: string | null }>;
+    expect(rows).toEqual([{ tool_call_id: "call_time" }]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

@@ -188,6 +188,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
         chatId: input.chatId,
         userId: input.userId,
         taskId: taskRouting.taskId,
+        toolCallId: call.id,
         toolName: call.name,
         args: asEventMeta(call.arguments ?? {}),
         rawResult,

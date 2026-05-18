@@ -59,6 +59,23 @@ test("memory status includes context-offload settings and generated skill count"
       maxCanvasChars: 12000,
       safeFallback: "short",
     },
+    l1: {
+      enabled: true,
+      mode: "local",
+      maxSummaryChars: 900,
+      defaultScore: 5,
+    },
+    l2: {
+      enabled: false,
+      mode: "local",
+      triggerMinEntries: 1,
+      maxCanvasChars: 12000,
+    },
+    taskRecall: {
+      enabled: true,
+      maxTasks: 3,
+      maxCanvasChars: 2200,
+    },
     l4: {
       enabled: true,
       mode: "local",

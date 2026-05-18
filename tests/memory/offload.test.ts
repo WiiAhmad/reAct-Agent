@@ -8,6 +8,21 @@ import { migrateSqliteMemory } from "../../src/memory/backends/sqlite/migrate";
 import { SqliteMemoryBackend } from "../../src/memory/backends/sqlite/backend";
 import { OffloadService } from "../../src/memory/offload/service";
 
+const noopLlm = {
+  async complete() {
+    return { content: JSON.stringify({ summary: "semantic summary", score: 5 }), toolCalls: [] };
+  },
+};
+
+function offloadOptions(input: { offloadMinChars: number; offloadSummaryChars: number }) {
+  return {
+    ...input,
+    l1: { enabled: false, mode: "local" as const, maxSummaryChars: input.offloadSummaryChars, defaultScore: 5 },
+    l2: { enabled: false, mode: "local" as const, triggerMinEntries: 1, maxCanvasChars: 12000 },
+    jsonlEnabled: false,
+  };
+}
+
 test("offload writes refs and nodes without updating a canvas when no taskId is provided", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-offload-"));
 
@@ -21,7 +36,7 @@ test("offload writes refs and nodes without updating a canvas when no taskId is 
     });
     await backend.init();
 
-    const ok = new OffloadService(backend, { offloadMinChars: 10, offloadSummaryChars: 80 });
+    const ok = new OffloadService(backend, offloadOptions({ offloadMinChars: 10, offloadSummaryChars: 80 }), noopLlm as any);
     const stored = await ok.offloadToolResult({
       chatId: "c1",
       userId: "u1",
@@ -82,7 +97,7 @@ test("offload writes refs and nodes without updating a canvas when no taskId is 
       }
       await writeFile(filePath, content, "utf8");
     });
-    const degraded = new OffloadService(backend, { offloadMinChars: 10, offloadSummaryChars: 80 }, failingWriter);
+    const degraded = new OffloadService(backend, offloadOptions({ offloadMinChars: 10, offloadSummaryChars: 80 }), noopLlm as any, failingWriter);
     const fallback = await degraded.offloadToolResult({
       chatId: "c1",
       userId: "u1",
@@ -135,7 +150,7 @@ test("task-scoped offload writes a Mermaid task canvas for the provided taskId",
     await backend.init();
     const task = await backend.createTaskCanvas({ chatId: "c1", userId: "u1", label: "demo-task" });
 
-    const service = new OffloadService(backend, { offloadMinChars: 1000, offloadSummaryChars: 80 });
+    const service = new OffloadService(backend, offloadOptions({ offloadMinChars: 1000, offloadSummaryChars: 80 }), noopLlm as any);
     const result = await service.offloadToolResult({
       chatId: "c1",
       userId: "u1",
@@ -219,7 +234,7 @@ test("offload degrades safely when transactional metadata persistence fails", as
     });
     await backend.init();
 
-    const ok = new OffloadService(backend, { offloadMinChars: 10, offloadSummaryChars: 80 });
+    const ok = new OffloadService(backend, offloadOptions({ offloadMinChars: 10, offloadSummaryChars: 80 }), noopLlm as any);
     const stored = await ok.offloadToolResult({
       chatId: "c1",
       userId: "u1",
@@ -238,7 +253,7 @@ test("offload degrades safely when transactional metadata persistence fails", as
       });
     });
 
-    const degraded = new OffloadService(backend, { offloadMinChars: 10, offloadSummaryChars: 80 });
+    const degraded = new OffloadService(backend, offloadOptions({ offloadMinChars: 10, offloadSummaryChars: 80 }), noopLlm as any);
     const fallback = await degraded.offloadToolResult({
       chatId: "c1",
       userId: "u1",
@@ -277,6 +292,70 @@ test("offload degrades safely when transactional metadata persistence fails", as
 
     const finalCanvas = await backend.getTaskCanvas("c1");
     expect(finalCanvas).toBeUndefined();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("offload writes semantic L1 evidence to SQLite and JSONL", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-offload-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+      taskCanvasDir: join(tempDir, "task-canvases"),
+    });
+    await backend.init();
+    const task = await backend.createTaskCanvas({ chatId: "c1", userId: "u1", label: "semantic-task" });
+
+    const llm = {
+      async complete() {
+        return {
+          content: JSON.stringify({ summary: "Confirmed the failing recall test targets missing historical canvas retrieval.", score: 9 }),
+          toolCalls: [],
+        };
+      },
+    };
+
+    const service = new OffloadService(backend, {
+      offloadMinChars: 1000,
+      offloadSummaryChars: 80,
+      l1: { enabled: true, mode: "local", maxSummaryChars: 160, defaultScore: 5 },
+      l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+      jsonlEnabled: true,
+    }, llm as any);
+
+    const result = await service.offloadToolResult({
+      chatId: "c1",
+      userId: "u1",
+      taskId: task.id,
+      toolCallId: "call_1",
+      toolName: "bun_test",
+      args: { file: "tests/memory/task-recall.test.ts" },
+      rawResult: "FAIL recall did not include completed canvas",
+    });
+
+    expect(result.summary).toBe("Confirmed the failing recall test targets missing historical canvas retrieval.");
+
+    const evidenceRows = await backend.listL1EvidenceEntriesForTask(task.id, 10);
+    expect(evidenceRows).toEqual([
+      expect.objectContaining({
+        nodeId: result.nodeId,
+        toolCallId: "call_1",
+        summary: "Confirmed the failing recall test targets missing historical canvas retrieval.",
+        score: 9,
+      }),
+    ]);
+
+    const jsonlPath = join(tempDir, "memory", "jsonl", "l1", "c1.jsonl");
+    const jsonl = await Bun.file(jsonlPath).text();
+    expect(jsonl).toContain('"type":"l1_evidence"');
+    expect(jsonl).toContain('"toolCallId":"call_1"');
+    expect(jsonl).toContain('"score":9');
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

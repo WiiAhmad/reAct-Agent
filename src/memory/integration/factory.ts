@@ -32,6 +32,23 @@ type MemoryServiceFactoryConfig = {
       maxCanvasChars: number;
       safeFallback: "short";
     };
+    l1?: {
+      enabled: boolean;
+      mode: "local";
+      maxSummaryChars: number;
+      defaultScore: number;
+    };
+    l2?: {
+      enabled: boolean;
+      mode: "local";
+      triggerMinEntries: number;
+      maxCanvasChars: number;
+    };
+    taskRecall?: {
+      enabled: boolean;
+      maxTasks: number;
+      maxCanvasChars: number;
+    };
     l4?: {
       enabled: boolean;
       mode: "local";
@@ -52,6 +69,26 @@ const defaultL15 = {
   safeFallback: "short" as const,
 };
 
+const defaultL1 = {
+  enabled: true,
+  mode: "local" as const,
+  maxSummaryChars: 900,
+  defaultScore: 5,
+};
+
+const defaultL2 = {
+  enabled: true,
+  mode: "local" as const,
+  triggerMinEntries: 1,
+  maxCanvasChars: 12000,
+};
+
+const defaultTaskRecall = {
+  enabled: true,
+  maxTasks: 3,
+  maxCanvasChars: 2200,
+};
+
 const defaultL4 = {
   enabled: true,
   mode: "local" as const,
@@ -63,6 +100,9 @@ const defaultL4 = {
 
 export async function createMemoryService(db: Database, llm: LlmProvider, config: MemoryServiceFactoryConfig): Promise<MemoryService> {
   const generatedSkillsDir = config.storage.memoryGeneratedSkillsDir ?? `${config.storage.dataDir}/memory/skills`;
+  const l1 = config.memory.l1 ?? defaultL1;
+  const l2 = config.memory.l2 ?? defaultL2;
+  const taskRecall = config.memory.taskRecall ?? defaultTaskRecall;
   const backend = new SqliteMemoryBackend(db, {
     dataDir: config.storage.dataDir,
     refsDir: config.storage.memoryRefsDir,
@@ -82,7 +122,10 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
   const offloadService = new OffloadService(backend, {
     offloadMinChars: config.memory.offloadEnabled ? config.memory.offloadMinChars : Number.MAX_SAFE_INTEGER,
     offloadSummaryChars: config.memory.offloadSummaryChars,
-  });
+    l1,
+    l2,
+    jsonlEnabled: config.memory.jsonlExportEnabled,
+  }, llm);
   const pipelineCoordinator = new PipelineCoordinator(backend, llm);
 
   return new MemoryService(
@@ -95,6 +138,9 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
       maintenanceCron: config.memory.maintenanceCron,
       offloadEnabled: config.memory.offloadEnabled,
       l15: config.memory.l15 ?? defaultL15,
+      l1,
+      l2,
+      taskRecall,
       l4: config.memory.l4 ?? defaultL4,
       generatedSkillsDir,
     },

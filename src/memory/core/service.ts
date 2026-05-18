@@ -51,6 +51,23 @@ export type MemoryServiceOptions = {
     maxCanvasChars: number;
     safeFallback: "short";
   };
+  l1: {
+    enabled: boolean;
+    mode: "local";
+    maxSummaryChars: number;
+    defaultScore: number;
+  };
+  l2: {
+    enabled: boolean;
+    mode: "local";
+    triggerMinEntries: number;
+    maxCanvasChars: number;
+  };
+  taskRecall: {
+    enabled: boolean;
+    maxTasks: number;
+    maxCanvasChars: number;
+  };
   l4: {
     enabled: boolean;
     mode: "local";
@@ -122,7 +139,10 @@ export class MemoryService {
     offloadService = new OffloadService(backend, {
       offloadMinChars: 2500,
       offloadSummaryChars: 900,
-    }),
+      l1: options.l1,
+      l2: options.l2,
+      jsonlEnabled: false,
+    }, llm),
     pipelineCoordinator = new PipelineCoordinator(backend, llm),
     interactionLogService = new InteractionLogService(backend, {
       enabled: false,
@@ -403,12 +423,13 @@ export class MemoryService {
     return { judgment, taskId: judgment.isLongTask ? taskId : undefined };
   }
 
-  async offloadToolResult(input: { chatId: string; userId: string; taskId?: number; toolName: string; args: EventMeta; rawResult: string }): Promise<OffloadToolResult> {
+  async offloadToolResult(input: { chatId: string; userId: string; taskId?: number; toolCallId?: string; toolName: string; args: EventMeta; rawResult: string }): Promise<OffloadToolResult> {
     const { offloadService } = getState(this);
     return offloadService.offloadToolResult({
       chatId: input.chatId,
       userId: input.userId,
       taskId: input.taskId,
+      toolCallId: input.toolCallId,
       toolName: input.toolName,
       args: input.args,
       rawResult: input.rawResult,
