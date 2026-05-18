@@ -65,6 +65,25 @@ function asEventMeta(value: Record<string, unknown>): EventMeta {
   return JSON.parse(JSON.stringify(value)) as EventMeta;
 }
 
+function shouldExposeSchedulingTools(input: string): boolean {
+  const normalized = input.normalize("NFKC").toLowerCase();
+  return [
+    /\bingatkan\b/u,
+    /\bpengingat\b/u,
+    /\bjadwalkan\b/u,
+    /\bjadwal\b/u,
+    /\bremind(?:er)?\b/u,
+    /\bschedul(?:e|ed)\b/u,
+    /\bset alarm\b/u,
+    /\bsetiap\b/u,
+    /\btiap\b/u,
+    /\bevery\b/u,
+    /\bbesok\b/u,
+    /\btomorrow\b/u,
+    /\b(\d+)\s*(detik|menit|jam|hari|seconds?|minutes?|hours?|days?)\b/u,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 export async function runReactAgent(input: RunAgentInput): Promise<string> {
   logAgentEvent("start", {
     mode: input.mode ?? "chat",
@@ -126,9 +145,11 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
       .map((m) => ({ role: m.role, content: m.content }) as AgentMessage),
   ];
 
+  const schedulingAllowed = shouldExposeSchedulingTools(input.input);
   const tools = input.registry
     .list()
-    .filter((tool) => input.mode !== "autonomous" || (tool.name !== "tdai_create_job" && tool.name !== "telegram_send_message"));
+    .filter((tool) => input.mode !== "autonomous" || (tool.name !== "tdai_create_job" && tool.name !== "telegram_send_message"))
+    .filter((tool) => tool.name !== "tdai_create_job" || input.mode === "autonomous" || schedulingAllowed);
   let final = "";
 
   for (let i = 0; i < config.agent.maxToolIterations; i++) {

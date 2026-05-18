@@ -95,6 +95,107 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
   }
 }, 20000);
 
+test("agent runtime keeps tdai_create_job hidden for unrelated follow-up chat turns", async () => {
+  let seenTools: string[] = [];
+  const llm = {
+    async complete({ tools }: { tools: Array<{ name: string }> }) {
+      seenTools = tools.map((tool) => tool.name);
+      return { content: "Nama saya Karina.", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: false,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+      },
+    });
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await memory.logUserMessage({ chatId: "c1", userId: "u1", content: "ingatkan saya 4 menit kedepan untuk meeting", mode: "chat" });
+    await memory.logAssistantMessage({ chatId: "c1", userId: "u1", content: "Siap, Terry. Saya Akan Ingatkan 4 Menit Lagi Untuk Meeting." });
+
+    await runReactAgent({ chatId: "c1", userId: "u1", input: "siapa nama kamu", memory, registry, llm: llm as any, mode: "chat" });
+
+    expect(seenTools).not.toContain("tdai_create_job");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}, 20000);
+
+test("agent runtime keeps tdai_create_job available for reminder requests", async () => {
+  let seenTools: string[] = [];
+  const llm = {
+    async complete({ tools }: { tools: Array<{ name: string }> }) {
+      seenTools = tools.map((tool) => tool.name);
+      return { content: "Siap, Terry.", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: false,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+      },
+    });
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await runReactAgent({ chatId: "c1", userId: "u1", input: "ingatkan saya 4 menit kedepan untuk meeting", memory, registry, llm: llm as any, mode: "chat" });
+
+    expect(seenTools).toContain("tdai_create_job");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}, 20000);
+
 test("agent runtime keeps current datetime one-shot question out of task canvas recall", async () => {
   const llmCalls: Array<Array<{ role: string; content?: string }>> = [];
   const llm = {

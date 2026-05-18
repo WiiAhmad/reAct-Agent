@@ -1,11 +1,11 @@
 {
-  "name": "grammy-openai-claude-agent-bun",
+  "name": "reAct-Agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts --outdir dist --target bun --external @tencentdb-agent-memory/tcvdb-text",
     "start": "bun dist/index.js",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
