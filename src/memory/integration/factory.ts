@@ -13,6 +13,7 @@ type MemoryServiceFactoryConfig = {
     memoryRefsDir: string;
     memoryCanvasDir: string;
     memoryJsonlExportDir: string;
+    historyDir: string;
     memoryTaskCanvasDir?: string;
     memoryGeneratedSkillsDir?: string;
   };
@@ -76,6 +77,7 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
   const interactionLogService = new InteractionLogService(backend, {
     enabled: config.memory.jsonlExportEnabled,
     exportDir: config.storage.memoryJsonlExportDir,
+    historyDir: config.storage.historyDir,
   });
   const offloadService = new OffloadService(backend, {
     offloadMinChars: config.memory.offloadEnabled ? config.memory.offloadMinChars : Number.MAX_SAFE_INTEGER,

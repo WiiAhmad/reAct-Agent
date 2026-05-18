@@ -18,6 +18,7 @@ const memory = await createMemoryService(db, llm as any, {
     memoryRefsDir: config.storage.memoryRefsDir,
     memoryCanvasDir: config.storage.memoryCanvasDir,
     memoryJsonlExportDir: config.storage.memoryJsonlExportDir,
+    historyDir: config.storage.historyDir,
   },
   memory: {
     maintenanceCron: config.memory.maintenanceCron,

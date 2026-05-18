@@ -60,10 +60,11 @@ test("force maintenance recomputes scenario and persona even without new turns",
     const logs = new InteractionLogService(backend, {
       enabled: false,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
     const pipeline = new PipelineCoordinator(backend, fakeLlm);
 
-    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "Please use Bun for this bot.", mode: "chat" });
+    await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "Please use Bun for this bot.", meta: { mode: "chat" } });
     const first = await pipeline.runMaintenanceForUser("u1", true);
     const second = await pipeline.runMaintenanceForUser("u1", true);
 
@@ -91,10 +92,11 @@ test("pipeline produces atoms, scenarios, persona, and lineage links", async () 
     const logs = new InteractionLogService(backend, {
       enabled: false,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
     const pipeline = new PipelineCoordinator(backend, fakeLlm);
 
-    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "Please use Bun for this bot.", mode: "chat" });
+    await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "Please use Bun for this bot.", meta: { mode: "chat" } });
     const result = await pipeline.runMaintenanceForUser("u1", true);
 
     expect(result.l1Created).toBe(1);
@@ -137,11 +139,12 @@ test("pipeline emits progress events for L1, L2, and L3", async () => {
     const logs = new InteractionLogService(backend, {
       enabled: false,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
     const pipeline = new PipelineCoordinator(backend, fakeLlm);
     const events: string[] = [];
 
-    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "Please use Bun for this bot.", mode: "chat" });
+    await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "Please use Bun for this bot.", meta: { mode: "chat" } });
     const result = await pipeline.runMaintenanceForUser("u1", true, {
       source: "telegram",
       onProgress: async (event) => {
@@ -177,11 +180,12 @@ test("pipeline ignores progress reporter failures", async () => {
     const logs = new InteractionLogService(backend, {
       enabled: false,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
     const pipeline = new PipelineCoordinator(backend, fakeLlm);
     const events: string[] = [];
 
-    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "Please use Bun for this bot.", mode: "chat" });
+    await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "Please use Bun for this bot.", meta: { mode: "chat" } });
     const result = await pipeline.runMaintenanceForUser("u1", true, {
       source: "telegram",
       onProgress: async (event) => {
@@ -251,6 +255,7 @@ test("pipeline does not advance the L1 checkpoint when L1 returns invalid JSON",
     const logs = new InteractionLogService(backend, {
       enabled: false,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
     const invalidJsonLlm: LlmProvider = {
       async complete() {
@@ -259,7 +264,7 @@ test("pipeline does not advance the L1 checkpoint when L1 returns invalid JSON",
     };
     const pipeline = new PipelineCoordinator(backend, invalidJsonLlm);
 
-    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "Remember I use Bun.", mode: "chat" });
+    await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "Remember I use Bun.", meta: { mode: "chat" } });
 
     const result = await pipeline.runMaintenanceForUser("u1");
 
@@ -327,6 +332,7 @@ test("pipeline collapses canonical atom variants before building the L2 scenario
     const logs = new InteractionLogService(backend, {
       enabled: false,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
     const duplicateVariantLlm: LlmProvider = {
       async complete({ messages }) {
@@ -355,7 +361,7 @@ test("pipeline collapses canonical atom variants before building the L2 scenario
     };
     const pipeline = new PipelineCoordinator(backend, duplicateVariantLlm);
 
-    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "My name is Wii.", mode: "chat" });
+    await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "My name is Wii.", meta: { mode: "chat" } });
     const result = await pipeline.runMaintenanceForUser("u1", true);
 
     const atoms = await backend.listMemoryAtoms("u1", 10);

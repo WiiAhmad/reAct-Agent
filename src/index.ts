@@ -29,6 +29,7 @@ async function main() {
       memoryRefsDir: config.storage.memoryRefsDir,
       memoryCanvasDir: config.storage.memoryCanvasDir,
       memoryJsonlExportDir: config.storage.memoryJsonlExportDir,
+      historyDir: config.storage.historyDir,
       memoryTaskCanvasDir: config.storage.memoryTaskCanvasDir,
       memoryGeneratedSkillsDir: config.storage.memoryGeneratedSkillsDir,
     },

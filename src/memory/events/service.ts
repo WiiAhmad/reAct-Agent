@@ -1,12 +1,20 @@
 import { join } from "node:path";
 import { nowIso } from "../../utils/time";
 import type { MemoryBackend } from "../core/backend";
-import type { EventMeta, InteractionEvent } from "../core/types";
+import type { ConversationTurnRole, EventMeta, InteractionEvent } from "../core/types";
+import {
+  appendChatHistoryTurn,
+  countChatHistoryRows,
+  readChatHistoryTail,
+  searchChatHistory,
+  type ChatHistoryRow,
+} from "../history/jsonl";
 import { exportInteractionEventJsonl } from "./jsonl-export";
 
 type InteractionLogServiceOptions = {
   enabled?: boolean;
   exportDir?: string;
+  historyDir: string;
 };
 
 export class InteractionLogService {
@@ -21,21 +29,22 @@ export class InteractionLogService {
 
   async logUserMessage(input: { chatId: string; userId: string; content: string; mode?: string }): Promise<number> {
     const createdAt = nowIso();
+    const meta: EventMeta = input.mode ? { mode: input.mode } : {};
     const eventId = await this.backend.insertInteractionEvent({
       chatId: input.chatId,
       userId: input.userId,
       type: "user_message",
       content: input.content,
-      meta: input.mode ? { mode: input.mode } : {},
+      meta,
       createdAt,
     });
 
-    await this.backend.insertConversationTurn({
+    await appendChatHistoryTurn(this.options.historyDir, {
       chatId: input.chatId,
       userId: input.userId,
       role: "user",
       content: input.content,
-      meta: input.mode ? { mode: input.mode } : {},
+      meta,
       createdAt,
     });
 
@@ -45,7 +54,7 @@ export class InteractionLogService {
       userId: input.userId,
       type: "user_message",
       content: input.content,
-      meta: input.mode ? { mode: input.mode } : {},
+      meta,
       createdAt,
     });
 
@@ -54,21 +63,22 @@ export class InteractionLogService {
 
   async logAssistantMessage(input: { chatId: string; userId: string; content: string; meta?: EventMeta }): Promise<number> {
     const createdAt = nowIso();
+    const meta = input.meta ?? {};
     const eventId = await this.backend.insertInteractionEvent({
       chatId: input.chatId,
       userId: input.userId,
       type: "assistant_message",
       content: input.content,
-      meta: input.meta ?? {},
+      meta,
       createdAt,
     });
 
-    await this.backend.insertConversationTurn({
+    await appendChatHistoryTurn(this.options.historyDir, {
       chatId: input.chatId,
       userId: input.userId,
       role: "assistant",
       content: input.content,
-      meta: input.meta ?? {},
+      meta,
       createdAt,
     });
 
@@ -78,7 +88,7 @@ export class InteractionLogService {
       userId: input.userId,
       type: "assistant_message",
       content: input.content,
-      meta: input.meta ?? {},
+      meta,
       createdAt,
     });
 
@@ -94,6 +104,7 @@ export class InteractionLogService {
     meta?: EventMeta;
   }): Promise<number> {
     const createdAt = nowIso();
+    const meta = withToolMeta(input.meta, input.toolName, input.toolCallId);
     const eventId = await this.backend.insertInteractionEvent({
       chatId: input.chatId,
       userId: input.userId,
@@ -105,12 +116,12 @@ export class InteractionLogService {
       createdAt,
     });
 
-    await this.backend.insertConversationTurn({
+    await appendChatHistoryTurn(this.options.historyDir, {
       chatId: input.chatId,
       userId: input.userId,
       role: "tool",
       content: input.content,
-      meta: input.meta ?? {},
+      meta,
       createdAt,
     });
 
@@ -139,6 +150,7 @@ export class InteractionLogService {
     meta?: EventMeta;
   }): Promise<number> {
     const createdAt = nowIso();
+    const meta = withToolMeta(input.meta, input.toolName, input.toolCallId, input.offloaded);
     const eventId = await this.backend.insertInteractionEvent({
       chatId: input.chatId,
       userId: input.userId,
@@ -151,12 +163,12 @@ export class InteractionLogService {
       createdAt,
     });
 
-    await this.backend.insertConversationTurn({
+    await appendChatHistoryTurn(this.options.historyDir, {
       chatId: input.chatId,
       userId: input.userId,
       role: "tool",
       content: input.content,
-      meta: input.meta ?? {},
+      meta,
       createdAt,
     });
 
@@ -176,8 +188,36 @@ export class InteractionLogService {
     return eventId;
   }
 
+  async recentMessages(
+    userId: string,
+    chatId: string,
+    limit: number,
+  ): Promise<Array<{ role: ConversationTurnRole; content: string; created_at: string; meta: EventMeta }>> {
+    const rows = await readChatHistoryTail(this.options.historyDir, chatId, limit);
+    return rows
+      .filter((row) => row.user_id === userId)
+      .map((row) => ({ role: row.role, content: row.content, created_at: row.created_at, meta: row.meta }));
+  }
+
+  async searchConversations(userId: string, query: string, limit: number, chatId?: string): Promise<ChatHistoryRow[]> {
+    return searchChatHistory({ historyDir: this.options.historyDir, userId, query, limit, chatId });
+  }
+
+  async countConversations(userId: string, chatId?: string): Promise<number> {
+    return countChatHistoryRows(this.options.historyDir, userId, chatId);
+  }
+
   private async exportIfEnabled(event: InteractionEvent): Promise<void> {
     if (this.options.enabled === false || !this.options.exportDir) return;
     await exportInteractionEventJsonl(join(this.options.exportDir, `${event.chatId}.jsonl`), event);
   }
+}
+
+function withToolMeta(meta: EventMeta | undefined, toolName: string, toolCallId?: string, offloaded?: boolean): EventMeta {
+  return {
+    ...(meta ?? {}),
+    tool_name: toolName,
+    ...(toolCallId ? { tool_call_id: toolCallId } : {}),
+    ...(offloaded === undefined ? {} : { offloaded }),
+  };
 }

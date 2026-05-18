@@ -32,6 +32,7 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
         memoryRefsDir: join(tempDir, "memory", "refs"),
         memoryCanvasDir: join(tempDir, "memory", "canvases"),
         memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
         memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
         memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
       },
@@ -84,6 +85,11 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
     const jsonl = await Bun.file(jsonlPath).text();
     expect(jsonl).toContain('"type":"user_message"');
     expect(jsonl).toContain('"type":"assistant_message"');
+
+    const history = await Bun.file(join(tempDir, "history", "c1.jsonl")).text();
+    expect(history).toContain('"role":"user"');
+    expect(history).toContain('"role":"assistant"');
+    expect(db.query(`SELECT COUNT(*) AS count FROM conversations`).get()).toEqual({ count: 0 });
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -118,6 +124,7 @@ test("agent runtime keeps current datetime one-shot question out of task canvas 
         memoryRefsDir: join(tempDir, "memory", "refs"),
         memoryCanvasDir: join(tempDir, "memory", "canvases"),
         memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
         memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
         memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
       },
@@ -158,6 +165,11 @@ test("agent runtime keeps current datetime one-shot question out of task canvas 
       llm: llm as any,
       mode: "chat",
     });
+
+    const history = await Bun.file(join(tempDir, "history", "c-time.jsonl")).text();
+    expect(history).toContain('"role":"user"');
+    expect(history).toContain('"role":"assistant"');
+    expect(db.query(`SELECT COUNT(*) AS count FROM conversations`).get()).toEqual({ count: 0 });
 
     const recall = await memory.recall("u1", "sekarang Hari apa dan jam berapa?", 5, "c-time");
     expect(recall.taskCanvas).toBeUndefined();

@@ -126,6 +126,7 @@ export class MemoryService {
     pipelineCoordinator = new PipelineCoordinator(backend, llm),
     interactionLogService = new InteractionLogService(backend, {
       enabled: false,
+      historyDir: resolve(options.dataDir, "history"),
     }),
   ) {
     memoryServiceState.set(this, {
@@ -140,8 +141,11 @@ export class MemoryService {
   }
 
   async recall(userId: string, query: string, maxResults: number, chatId?: string): Promise<MemoryServiceRecall> {
-    const { recallService } = getState(this);
-    const recall = await recallService.recall(userId, query, maxResults, chatId);
+    const { recallService, interactionLogService } = getState(this);
+    const [recall, conversationRows] = await Promise.all([
+      recallService.recall(userId, query, maxResults, chatId),
+      interactionLogService.searchConversations(userId, query, maxResults, chatId),
+    ]);
     return {
       persona: recall.persona,
       atoms: recall.atoms,
@@ -151,27 +155,27 @@ export class MemoryService {
         bodyMarkdown: scenario.bodyMarkdown,
         body_markdown: scenario.bodyMarkdown,
       })),
-      conversations: recall.conversations.map((conversation) => ({
+      conversations: conversationRows.map((conversation) => ({
         id: conversation.id,
         role: conversation.role,
         content: conversation.content,
-        createdAt: conversation.createdAt,
-        created_at: conversation.createdAt,
+        createdAt: conversation.created_at,
+        created_at: conversation.created_at,
       })),
       taskCanvas: recall.taskCanvas,
     };
   }
 
   async searchConversations(userId: string, query: string, limit = 5): Promise<string> {
-    const { backend } = getState(this);
-    const conversations = await backend.searchConversationTurns(userId, query, limit);
+    const { interactionLogService } = getState(this);
+    const conversations = await interactionLogService.searchConversations(userId, query, limit);
     if (conversations.length === 0) {
       return "No matching conversation found.";
     }
 
     return conversations
       .map((conversation) => {
-        return `#${conversation.id} [${conversation.createdAt}] ${conversation.role}: ${truncateText(conversation.content, 800)}`;
+        return `#${conversation.id} [${conversation.created_at}] ${conversation.role}: ${truncateText(conversation.content, 800)}`;
       })
       .join("\n\n");
   }
@@ -198,7 +202,7 @@ export class MemoryService {
   }
 
   async memoryStatus(userId: string, chatId?: string): Promise<string> {
-    const { backend, options } = getState(this);
+    const { backend, interactionLogService, options } = getState(this);
     const taskCanvasPath = async () => {
       if (!chatId) {
         return undefined;
@@ -217,7 +221,7 @@ export class MemoryService {
       return canvas ? backend.getTaskCanvasPath(chatId) : undefined;
     };
     const [conversationCount, atomCount, scenarioCount, offloadRefCount, generatedSkillCount, persona, resolvedTaskCanvasPath] = await Promise.all([
-      backend.countConversationTurns(userId),
+      interactionLogService.countConversations(userId, chatId),
       backend.countMemoryAtoms(userId),
       backend.countMemoryScenarios(userId),
       backend.countOffloadRefs(userId),
@@ -308,14 +312,8 @@ export class MemoryService {
   }
 
   async recentMessages(userId: string, chatId: string, limit: number): Promise<Array<{ role: ConversationTurnRole; content: string; created_at: string; meta?: Record<string, unknown> }>> {
-    const { backend } = getState(this);
-    const turns = await backend.listConversationTurns(userId, chatId, limit);
-    return turns.map((turn) => ({
-      role: turn.role,
-      content: turn.content,
-      created_at: turn.createdAt,
-      meta: turn.meta as Record<string, unknown>,
-    }));
+    const { interactionLogService } = getState(this);
+    return interactionLogService.recentMessages(userId, chatId, limit);
   }
 
   async listTaskCanvases(userId: string, chatId: string, limit = 10): Promise<TaskCanvas[]> {
@@ -339,7 +337,7 @@ export class MemoryService {
   }
 
   async judgeTaskTurn(input: JudgeTaskTurnInput): Promise<JudgeTaskTurnResult> {
-    const { backend, llm, options } = getState(this);
+    const { backend, interactionLogService, llm, options } = getState(this);
     const fallback: L15JudgmentResult = { taskCompleted: false, isLongTask: false, isContinuation: false, source: "fallback" };
 
     if (!options.l15.enabled) {
@@ -347,7 +345,7 @@ export class MemoryService {
     }
 
     const [turns, activeTask, historicalTasks] = await Promise.all([
-      backend.listConversationTurns(input.userId, input.chatId, options.l15.recentMessages),
+      interactionLogService.recentMessages(input.userId, input.chatId, options.l15.recentMessages),
       backend.getActiveTaskCanvas(input.userId, input.chatId),
       backend.listTaskCanvases(input.userId, input.chatId, options.l15.historyTaskLimit),
     ]);

@@ -9,7 +9,7 @@ import { SqliteMemoryBackend } from "../../src/memory/backends/sqlite/backend";
 import { InteractionLogService } from "../../src/memory/events/service";
 import type { JsonValue } from "../../src/memory/core/types";
 
-test("SQLite backend stores interaction events, optional JSONL exports, L0 turns, and checkpoints", async () => {
+test("SQLite backend stores interaction events, optional diagnostic exports, JSONL history, and checkpoints", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 
   try {
@@ -24,6 +24,7 @@ test("SQLite backend stores interaction events, optional JSONL exports, L0 turns
     const logs = new InteractionLogService(backend, {
       enabled: true,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
 
     await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "remember Bun", mode: "chat" });
@@ -40,9 +41,12 @@ test("SQLite backend stores interaction events, optional JSONL exports, L0 turns
     const turns = await backend.listConversationTurns("u1", "c1", 10);
     const events = await backend.listInteractionEvents("u1", "c1", 10);
     const jsonl = await Bun.file(join(tempDir, "jsonl", "c1.jsonl")).text();
+    const history = await Bun.file(join(tempDir, "history", "c1.jsonl")).text();
 
-    expect(turns[0]?.content).toBe("remember Bun");
+    expect(turns).toHaveLength(0);
     expect(jsonl).toContain('"type":"user_message"');
+    expect(history).toContain('"role":"user"');
+    expect(history).toContain('"role":"tool"');
     expect(events.some((event) => event.type === "tool_result")).toBe(true);
     expect(await backend.getCheckpoint("u1", "l1_last_conversation_id")).toBe("1");
   } finally {
@@ -160,6 +164,7 @@ test("SQLite backend logs events even when JSONL export is disabled", async () =
     const logs = new InteractionLogService(backend, {
       enabled: false,
       exportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
     });
 
     const eventId = await logs.logUserMessage({ chatId: "c2", userId: "u2", content: "persist this", mode: "chat" });
@@ -167,8 +172,9 @@ test("SQLite backend logs events even when JSONL export is disabled", async () =
     const events = await backend.listInteractionEvents("u2", "c2", 10);
 
     expect(eventId).toBeNumber();
-    expect(turns).toHaveLength(1);
+    expect(turns).toHaveLength(0);
     expect(events).toHaveLength(1);
+    expect(await Bun.file(join(tempDir, "history", "c2.jsonl")).exists()).toBe(true);
     expect(await Bun.file(join(tempDir, "jsonl", "c2.jsonl")).exists()).toBe(false);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
