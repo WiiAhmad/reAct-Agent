@@ -98,6 +98,23 @@ export function parseConfig(source: ConfigSource) {
         maxCanvasChars: intEnv(source, "MEMORY_L15_MAX_CANVAS_CHARS", 12000),
         safeFallback: enumEnv(source, "MEMORY_L15_SAFE_FALLBACK", "short", ["short"]),
       },
+      l1: {
+        enabled: boolEnv(source, "MEMORY_L1_ENABLED", true),
+        mode: enumEnv(source, "MEMORY_L1_MODE", "local", ["local"]),
+        maxSummaryChars: intEnv(source, "MEMORY_L1_MAX_SUMMARY_CHARS", 900),
+        defaultScore: intEnv(source, "MEMORY_L1_DEFAULT_SCORE", 5),
+      },
+      l2: {
+        enabled: boolEnv(source, "MEMORY_L2_ENABLED", true),
+        mode: enumEnv(source, "MEMORY_L2_MODE", "local", ["local"]),
+        triggerMinEntries: intEnv(source, "MEMORY_L2_TRIGGER_MIN_ENTRIES", 1),
+        maxCanvasChars: intEnv(source, "MEMORY_L2_MAX_CANVAS_CHARS", 12000),
+      },
+      taskRecall: {
+        enabled: boolEnv(source, "MEMORY_TASK_RECALL_ENABLED", true),
+        maxTasks: intEnv(source, "MEMORY_TASK_RECALL_MAX_TASKS", 3),
+        maxCanvasChars: intEnv(source, "MEMORY_TASK_RECALL_MAX_CANVAS_CHARS", 2200),
+      },
       l4: {
         enabled: boolEnv(source, "MEMORY_L4_ENABLED", true),
         mode: enumEnv(source, "MEMORY_L4_MODE", "local", ["local"]),
@@ -198,6 +215,9 @@ export function getRuntimeConfigSummary() {
       sqliteVecEnabled: config.memory.sqliteVecEnabled,
       jsonlExportEnabled: config.memory.jsonlExportEnabled,
       l15: config.memory.l15,
+      l1: config.memory.l1,
+      l2: config.memory.l2,
+      taskRecall: config.memory.taskRecall,
       l4: config.memory.l4,
     },
   };

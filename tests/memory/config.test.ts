@@ -98,6 +98,67 @@ test("parseConfig applies app and memory offload pipeline overrides", () => {
   expect(runtime.storage.memoryGeneratedSkillsDir.endsWith("custom/skills")).toBe(true);
 });
 
+test("parseConfig exposes semantic offload defaults and overrides", () => {
+  const defaults = parseConfig({
+    BOT_TOKEN: "123:abc",
+    LLM_PROVIDER: "openai",
+    OPENAI_API_KEY: "sk-test",
+  });
+
+  expect(defaults.memory.l1).toEqual({
+    enabled: true,
+    mode: "local",
+    maxSummaryChars: 900,
+    defaultScore: 5,
+  });
+  expect(defaults.memory.l2).toEqual({
+    enabled: true,
+    mode: "local",
+    triggerMinEntries: 1,
+    maxCanvasChars: 12000,
+  });
+  expect(defaults.memory.taskRecall).toEqual({
+    enabled: true,
+    maxTasks: 3,
+    maxCanvasChars: 2200,
+  });
+
+  const overridden = parseConfig({
+    BOT_TOKEN: "123:abc",
+    LLM_PROVIDER: "openai",
+    OPENAI_API_KEY: "sk-test",
+    MEMORY_L1_ENABLED: "false",
+    MEMORY_L1_MODE: "local",
+    MEMORY_L1_MAX_SUMMARY_CHARS: "700",
+    MEMORY_L1_DEFAULT_SCORE: "4",
+    MEMORY_L2_ENABLED: "false",
+    MEMORY_L2_MODE: "local",
+    MEMORY_L2_TRIGGER_MIN_ENTRIES: "3",
+    MEMORY_L2_MAX_CANVAS_CHARS: "8000",
+    MEMORY_TASK_RECALL_ENABLED: "false",
+    MEMORY_TASK_RECALL_MAX_TASKS: "2",
+    MEMORY_TASK_RECALL_MAX_CANVAS_CHARS: "1500",
+  });
+
+  expect(overridden.memory.l1).toEqual({
+    enabled: false,
+    mode: "local",
+    maxSummaryChars: 700,
+    defaultScore: 4,
+  });
+  expect(overridden.memory.l2).toEqual({
+    enabled: false,
+    mode: "local",
+    triggerMinEntries: 3,
+    maxCanvasChars: 8000,
+  });
+  expect(overridden.memory.taskRecall).toEqual({
+    enabled: false,
+    maxTasks: 2,
+    maxCanvasChars: 1500,
+  });
+});
+
 test("parseConfig exposes scheduler defaults and overrides", () => {
   const defaults = parseConfig({
     BOT_TOKEN: "123:abc",

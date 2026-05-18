@@ -71,6 +71,7 @@ export class RecallService {
       scenarios,
       conversations,
       taskCanvas,
+      taskCanvases: [],
       fallbackChain: [...fallbackChainMap.values()],
     };
   }

@@ -8,10 +8,12 @@ import type {
   MemoryScenario,
   GeneratedSkill,
   L15Judgment,
+  L1EvidenceEntry,
   NewConversationTurn,
   NewGeneratedSkill,
   NewInteractionEvent,
   NewL15Judgment,
+  NewL1EvidenceEntry,
   NewLineageLink,
   NewMemoryAtom,
   NewMemoryScenario,
@@ -25,6 +27,7 @@ import type {
   PipelineCheckpointValue,
   TaskBoundary,
   TaskCanvas,
+  TaskCanvasRecall,
   TaskCanvasStatus,
   TaskGraphNode,
   UpsertMemoryAtomResult,
@@ -73,6 +76,13 @@ export interface MemoryBackend {
   deleteOffloadMetadata(nodeId: string): Promise<void>;
   listTaskGraphNodes(chatId: string, limit: number): Promise<TaskGraphNode[]>;
   listTaskGraphNodesForTask(taskId: number, limit: number): Promise<TaskGraphNode[]>;
+  insertL1EvidenceEntry(entry: NewL1EvidenceEntry): Promise<L1EvidenceEntry>;
+  listL1EvidenceEntriesForTask(taskId: number, limit: number): Promise<L1EvidenceEntry[]>;
+  listPendingL1EvidenceEntriesForTask(taskId: number, limit: number): Promise<L1EvidenceEntry[]>;
+  updateL1EvidenceNodeMapping(taskId: number, mapping: Record<string, string>): Promise<void>;
+  getL1EvidenceJsonlPath(chatId: string): Promise<{ absolutePath: string; relativePath: string }>;
+  upsertTaskCanvasSearchText(input: { taskId: number; chatId: string; userId: string; label: string; status: TaskCanvasStatus; filePath: string; canvas: string }): Promise<void>;
+  searchTaskCanvases(userId: string, query: string, limit: number, chatId?: string): Promise<TaskCanvasRecall[]>;
   insertGeneratedSkill(skill: NewGeneratedSkill): Promise<GeneratedSkill>;
   countGeneratedSkills(userId: string): Promise<number>;
   listGeneratedSkills(userId: string, limit: number): Promise<GeneratedSkill[]>;

@@ -232,10 +232,30 @@ export function migrateSqliteMemory(db: Database) {
       task_id INTEGER,
       node_id TEXT NOT NULL UNIQUE,
       tool_name TEXT,
+      tool_call_id TEXT,
       args_json TEXT NOT NULL DEFAULT '{}',
       summary TEXT NOT NULL,
       result_ref TEXT,
+      score INTEGER NOT NULL DEFAULT 5,
+      mmd_node_id TEXT,
       status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_l1_evidence_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      task_id INTEGER,
+      node_id TEXT NOT NULL UNIQUE,
+      tool_call_id TEXT,
+      tool_name TEXT NOT NULL,
+      args_json TEXT NOT NULL DEFAULT '{}',
+      summary TEXT NOT NULL,
+      result_ref TEXT,
+      score INTEGER NOT NULL DEFAULT 5,
+      mmd_node_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL
     );
 
@@ -248,6 +268,17 @@ export function migrateSqliteMemory(db: Database) {
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_task_canvas_fts USING fts5(
+      label,
+      canvas,
+      task_id UNINDEXED,
+      chat_id UNINDEXED,
+      user_id UNINDEXED,
+      status UNINDEXED,
+      file_path UNINDEXED,
+      tokenize = 'unicode61'
     );
 
     CREATE TABLE IF NOT EXISTS memory_l15_judgments (
@@ -340,6 +371,15 @@ export function migrateSqliteMemory(db: Database) {
 
   if (!hasColumn(db, "memory_task_nodes", "task_id")) {
     db.exec(`ALTER TABLE memory_task_nodes ADD COLUMN task_id INTEGER`);
+  }
+  if (!hasColumn(db, "memory_task_nodes", "tool_call_id")) {
+    db.exec(`ALTER TABLE memory_task_nodes ADD COLUMN tool_call_id TEXT`);
+  }
+  if (!hasColumn(db, "memory_task_nodes", "score")) {
+    db.exec(`ALTER TABLE memory_task_nodes ADD COLUMN score INTEGER NOT NULL DEFAULT 5`);
+  }
+  if (!hasColumn(db, "memory_task_nodes", "mmd_node_id")) {
+    db.exec(`ALTER TABLE memory_task_nodes ADD COLUMN mmd_node_id TEXT`);
   }
 
   if (!hasColumn(db, "memory_atoms", "canonical_text")) {

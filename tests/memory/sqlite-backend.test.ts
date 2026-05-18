@@ -840,6 +840,72 @@ test("SQLite backend keeps programming language atoms with semantic symbols sepa
   }
 });
 
+test("SQLite backend stores L1 evidence and indexes task canvases for recall", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+      taskCanvasDir: join(tempDir, "memory", "task-canvases"),
+    });
+    await backend.init();
+
+    const task = await backend.createTaskCanvas({ chatId: "c1", userId: "u1", label: "fix-login-flow" });
+    const evidence = await backend.insertL1EvidenceEntry({
+      chatId: "c1",
+      userId: "u1",
+      taskId: task.id,
+      nodeId: "ref_l1_1",
+      toolCallId: "call_1",
+      toolName: "read_file",
+      args: { path: "src/login.ts" },
+      summary: "Read login flow and found missing token refresh branch.",
+      resultRef: "refs/c1/ref_l1_1.md",
+      score: 8,
+      status: "pending",
+    });
+
+    expect(evidence.id).toBeNumber();
+    expect(evidence.toolCallId).toBe("call_1");
+    expect(evidence.score).toBe(8);
+
+    const pending = await backend.listPendingL1EvidenceEntriesForTask(task.id, 10);
+    expect(pending.map((entry) => entry.nodeId)).toEqual(["ref_l1_1"]);
+
+    await backend.updateL1EvidenceNodeMapping(task.id, { ref_l1_1: "N1" });
+    const mapped = await backend.listL1EvidenceEntriesForTask(task.id, 10);
+    expect(mapped[0]).toEqual(expect.objectContaining({ nodeId: "ref_l1_1", mmdNodeId: "N1", status: "mapped" }));
+
+    const canvas = "flowchart TD\n  N1[\"Inspect login flow<br/>status: done<br/>summary: Missing token refresh branch\"]\n";
+    await backend.upsertTaskCanvasSearchText({
+      taskId: task.id,
+      chatId: "c1",
+      userId: "u1",
+      label: task.label,
+      status: "active",
+      filePath: task.filePath,
+      canvas,
+    });
+
+    const results = await backend.searchTaskCanvases("u1", "token refresh", 5, "c1");
+    expect(results).toEqual([
+      expect.objectContaining({
+        id: task.id,
+        label: "fix-login-flow",
+        filePath: task.filePath,
+        canvas,
+      }),
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("SQLite backend canonicalizes obvious atom variants on upsert", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
 

@@ -10,6 +10,8 @@ import type {
   InteractionEvent,
   JsonValue,
   L15Judgment,
+  L1EvidenceEntry,
+  L1EvidenceStatus,
   LineageLink,
   LineageSourceKind,
   MemoryAtom,
@@ -19,6 +21,7 @@ import type {
   NewGeneratedSkill,
   NewInteractionEvent,
   NewL15Judgment,
+  NewL1EvidenceEntry,
   NewLineageLink,
   NewMemoryAtom,
   NewMemoryScenario,
@@ -32,6 +35,7 @@ import type {
   PipelineCheckpointValue,
   TaskBoundary,
   TaskCanvas,
+  TaskCanvasRecall,
   TaskCanvasStatus,
   TaskGraphNode,
   UpsertMemoryAtomResult,
@@ -101,6 +105,40 @@ function mapTaskCanvasRow(row: {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapL1EvidenceRow(row: {
+  id: number;
+  chat_id: string;
+  user_id: string;
+  task_id: number | null;
+  node_id: string;
+  tool_call_id: string | null;
+  tool_name: string;
+  args_json: string;
+  summary: string;
+  result_ref: string | null;
+  score: number;
+  mmd_node_id: string | null;
+  status: string;
+  created_at: string;
+}): L1EvidenceEntry {
+  return {
+    id: row.id,
+    chatId: row.chat_id,
+    userId: row.user_id,
+    taskId: row.task_id ?? undefined,
+    nodeId: row.node_id,
+    toolCallId: row.tool_call_id ?? undefined,
+    toolName: row.tool_name,
+    args: parseEventMeta(row.args_json),
+    summary: row.summary,
+    resultRef: row.result_ref ?? undefined,
+    score: row.score,
+    mmdNodeId: row.mmd_node_id ?? undefined,
+    status: row.status as L1EvidenceStatus,
+    createdAt: row.created_at,
   };
 }
 
@@ -999,6 +1037,14 @@ export class SqliteMemoryBackend implements MemoryBackend {
     };
   }
 
+  async getL1EvidenceJsonlPath(chatId: string): Promise<{ absolutePath: string; relativePath: string }> {
+    const relativePath = join("memory", "jsonl", "l1", `${safeChatSegment(chatId)}.jsonl`).replace(/\\/g, "/");
+    return {
+      absolutePath: join(this.options.dataDir, relativePath),
+      relativePath,
+    };
+  }
+
   async getTaskCanvasPath(chatId: string): Promise<string> {
     return join(this.options.canvasDir, `${chatId}.mmd`);
   }
@@ -1108,8 +1154,8 @@ export class SqliteMemoryBackend implements MemoryBackend {
     const createdAt = node.createdAt ?? nowIso();
     const result = this.db
       .query(`
-        INSERT INTO memory_task_nodes (chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO memory_task_nodes (chat_id, user_id, task_id, node_id, tool_name, tool_call_id, args_json, summary, result_ref, score, mmd_node_id, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         node.chatId,
@@ -1117,9 +1163,12 @@ export class SqliteMemoryBackend implements MemoryBackend {
         node.taskId ?? null,
         node.nodeId,
         node.toolName ?? null,
+        node.toolCallId ?? null,
         JSON.stringify(node.args ?? {}),
         node.summary,
         node.resultRef ?? null,
+        node.score ?? 5,
+        node.mmdNodeId ?? null,
         node.status,
         createdAt,
       );
@@ -1141,8 +1190,8 @@ export class SqliteMemoryBackend implements MemoryBackend {
 
       this.db
         .query(`
-          INSERT INTO memory_task_nodes (chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO memory_task_nodes (chat_id, user_id, task_id, node_id, tool_name, tool_call_id, args_json, summary, result_ref, score, mmd_node_id, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           nextNode.chatId,
@@ -1150,9 +1199,12 @@ export class SqliteMemoryBackend implements MemoryBackend {
           nextNode.taskId ?? null,
           nextNode.nodeId,
           nextNode.toolName ?? null,
+          nextNode.toolCallId ?? null,
           JSON.stringify(nextNode.args ?? {}),
           nextNode.summary,
           nextNode.resultRef ?? null,
+          nextNode.score ?? 5,
+          nextNode.mmdNodeId ?? null,
           nextNode.status,
           nodeCreatedAt,
         );
@@ -1173,7 +1225,7 @@ export class SqliteMemoryBackend implements MemoryBackend {
   async listTaskGraphNodes(chatId: string, limit: number): Promise<TaskGraphNode[]> {
     const rows = this.db
       .query(`
-        SELECT id, chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at
+        SELECT id, chat_id, user_id, task_id, node_id, tool_name, tool_call_id, args_json, summary, result_ref, score, mmd_node_id, status, created_at
         FROM memory_task_nodes
         WHERE chat_id = ?
         ORDER BY id DESC
@@ -1186,9 +1238,12 @@ export class SqliteMemoryBackend implements MemoryBackend {
       task_id: number | null;
       node_id: string;
       tool_name: string | null;
+      tool_call_id: string | null;
       args_json: string;
       summary: string;
       result_ref: string | null;
+      score: number;
+      mmd_node_id: string | null;
       status: string;
       created_at: string;
     }>;
@@ -1200,9 +1255,12 @@ export class SqliteMemoryBackend implements MemoryBackend {
       taskId: row.task_id ?? undefined,
       nodeId: row.node_id,
       toolName: row.tool_name ?? undefined,
+      toolCallId: row.tool_call_id ?? undefined,
       args: parseEventMeta(row.args_json),
       summary: row.summary,
       resultRef: row.result_ref ?? undefined,
+      score: row.score,
+      mmdNodeId: row.mmd_node_id ?? undefined,
       status: row.status,
       createdAt: row.created_at,
     }));
@@ -1211,7 +1269,7 @@ export class SqliteMemoryBackend implements MemoryBackend {
   async listTaskGraphNodesForTask(taskId: number, limit: number): Promise<TaskGraphNode[]> {
     const rows = this.db
       .query(`
-        SELECT id, chat_id, user_id, task_id, node_id, tool_name, args_json, summary, result_ref, status, created_at
+        SELECT id, chat_id, user_id, task_id, node_id, tool_name, tool_call_id, args_json, summary, result_ref, score, mmd_node_id, status, created_at
         FROM memory_task_nodes
         WHERE task_id = ?
         ORDER BY id ASC
@@ -1224,9 +1282,12 @@ export class SqliteMemoryBackend implements MemoryBackend {
       task_id: number | null;
       node_id: string;
       tool_name: string | null;
+      tool_call_id: string | null;
       args_json: string;
       summary: string;
       result_ref: string | null;
+      score: number;
+      mmd_node_id: string | null;
       status: string;
       created_at: string;
     }>;
@@ -1238,11 +1299,163 @@ export class SqliteMemoryBackend implements MemoryBackend {
       taskId: row.task_id ?? undefined,
       nodeId: row.node_id,
       toolName: row.tool_name ?? undefined,
+      toolCallId: row.tool_call_id ?? undefined,
       args: parseEventMeta(row.args_json),
       summary: row.summary,
       resultRef: row.result_ref ?? undefined,
+      score: row.score,
+      mmdNodeId: row.mmd_node_id ?? undefined,
       status: row.status,
       createdAt: row.created_at,
+    }));
+  }
+
+  async insertL1EvidenceEntry(entry: NewL1EvidenceEntry): Promise<L1EvidenceEntry> {
+    const createdAt = entry.createdAt ?? nowIso();
+    const score = entry.score ?? 5;
+    const status = entry.status ?? "pending";
+    const result = this.db
+      .query(`
+        INSERT INTO memory_l1_evidence_entries (
+          chat_id, user_id, task_id, node_id, tool_call_id, tool_name, args_json,
+          summary, result_ref, score, mmd_node_id, status, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        entry.chatId,
+        entry.userId,
+        entry.taskId ?? null,
+        entry.nodeId,
+        entry.toolCallId ?? null,
+        entry.toolName,
+        JSON.stringify(entry.args ?? {}),
+        entry.summary,
+        entry.resultRef ?? null,
+        score,
+        entry.mmdNodeId ?? null,
+        status,
+        createdAt,
+      );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      chatId: entry.chatId,
+      userId: entry.userId,
+      taskId: entry.taskId,
+      nodeId: entry.nodeId,
+      toolCallId: entry.toolCallId,
+      toolName: entry.toolName,
+      args: entry.args ?? {},
+      summary: entry.summary,
+      resultRef: entry.resultRef,
+      score,
+      mmdNodeId: entry.mmdNodeId,
+      status,
+      createdAt,
+    };
+  }
+
+  async listL1EvidenceEntriesForTask(taskId: number, limit: number): Promise<L1EvidenceEntry[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, task_id, node_id, tool_call_id, tool_name, args_json,
+          summary, result_ref, score, mmd_node_id, status, created_at
+        FROM memory_l1_evidence_entries
+        WHERE task_id = ?
+        ORDER BY id ASC
+        LIMIT ?
+      `)
+      .all(taskId, limit) as Array<Parameters<typeof mapL1EvidenceRow>[0]>;
+
+    return rows.map(mapL1EvidenceRow);
+  }
+
+  async listPendingL1EvidenceEntriesForTask(taskId: number, limit: number): Promise<L1EvidenceEntry[]> {
+    const rows = this.db
+      .query(`
+        SELECT id, chat_id, user_id, task_id, node_id, tool_call_id, tool_name, args_json,
+          summary, result_ref, score, mmd_node_id, status, created_at
+        FROM memory_l1_evidence_entries
+        WHERE task_id = ? AND status = 'pending'
+        ORDER BY id ASC
+        LIMIT ?
+      `)
+      .all(taskId, limit) as Array<Parameters<typeof mapL1EvidenceRow>[0]>;
+
+    return rows.map(mapL1EvidenceRow);
+  }
+
+  async updateL1EvidenceNodeMapping(taskId: number, mapping: Record<string, string>): Promise<void> {
+    const updateEvidence = this.db.query(`
+      UPDATE memory_l1_evidence_entries
+      SET mmd_node_id = ?, status = 'mapped'
+      WHERE task_id = ? AND node_id = ?
+    `);
+    const updateNode = this.db.query(`
+      UPDATE memory_task_nodes
+      SET mmd_node_id = ?
+      WHERE task_id = ? AND node_id = ?
+    `);
+
+    const tx = this.db.transaction(() => {
+      for (const [nodeId, mmdNodeId] of Object.entries(mapping)) {
+        updateEvidence.run(mmdNodeId, taskId, nodeId);
+        updateNode.run(mmdNodeId, taskId, nodeId);
+      }
+    });
+    tx();
+  }
+
+  async upsertTaskCanvasSearchText(input: { taskId: number; chatId: string; userId: string; label: string; status: TaskCanvasStatus; filePath: string; canvas: string }): Promise<void> {
+    this.db.query(`DELETE FROM memory_task_canvas_fts WHERE task_id = ?`).run(String(input.taskId));
+    this.db
+      .query(`
+        INSERT INTO memory_task_canvas_fts (label, canvas, task_id, chat_id, user_id, status, file_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(input.label, input.canvas, String(input.taskId), input.chatId, input.userId, input.status, input.filePath);
+  }
+
+  async searchTaskCanvases(userId: string, query: string, limit: number, chatId?: string): Promise<TaskCanvasRecall[]> {
+    const fts = ftsQuery(query);
+    if (!fts) {
+      return [];
+    }
+
+    const rows = this.db
+      .query(`
+        SELECT c.id, c.chat_id, c.user_id, c.label, c.file_path, c.status, c.created_at, c.updated_at, f.canvas
+        FROM memory_task_canvas_fts f
+        JOIN memory_task_canvases c ON c.id = CAST(f.task_id AS INTEGER)
+        WHERE f.user_id = ?
+          AND (? IS NULL OR f.chat_id = ?)
+          AND memory_task_canvas_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+      `)
+      .all(userId, chatId ?? null, chatId ?? null, fts, limit) as Array<{
+      id: number;
+      chat_id: string;
+      user_id: string;
+      label: string;
+      file_path: string;
+      status: TaskCanvasStatus;
+      created_at: string;
+      updated_at: string;
+      canvas: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      label: row.label,
+      filePath: row.file_path,
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      canvas: row.canvas,
     }));
   }
 

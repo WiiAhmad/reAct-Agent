@@ -139,6 +139,7 @@ export type MemoryRecall = {
   scenarios: MemoryScenario[];
   conversations: ConversationTurn[];
   taskCanvas?: string;
+  taskCanvases: TaskCanvasRecall[];
   fallbackChain: MemoryRecallFallback[];
 };
 
@@ -172,9 +173,12 @@ export type TaskGraphNode = {
   taskId?: number;
   nodeId: string;
   toolName?: string;
+  toolCallId?: string;
   args: EventMeta;
   summary: string;
   resultRef?: string;
+  score?: number;
+  mmdNodeId?: string;
   status: string;
   createdAt: string;
 };
@@ -185,10 +189,48 @@ export type NewTaskGraphNode = {
   taskId?: number;
   nodeId: string;
   toolName?: string;
+  toolCallId?: string;
   args?: EventMeta;
   summary: string;
   resultRef?: string;
+  score?: number;
+  mmdNodeId?: string;
   status: string;
+  createdAt?: string;
+};
+
+export type L1EvidenceStatus = "pending" | "mapped" | "fallback";
+
+export type L1EvidenceEntry = {
+  id: number;
+  chatId: string;
+  userId: string;
+  taskId?: number;
+  nodeId: string;
+  toolCallId?: string;
+  toolName: string;
+  args: EventMeta;
+  summary: string;
+  resultRef?: string;
+  score: number;
+  mmdNodeId?: string;
+  status: L1EvidenceStatus;
+  createdAt: string;
+};
+
+export type NewL1EvidenceEntry = {
+  chatId: string;
+  userId: string;
+  taskId?: number;
+  nodeId: string;
+  toolCallId?: string;
+  toolName: string;
+  args?: EventMeta;
+  summary: string;
+  resultRef?: string;
+  score?: number;
+  mmdNodeId?: string;
+  status?: L1EvidenceStatus;
   createdAt?: string;
 };
 
@@ -211,6 +253,10 @@ export type NewTaskCanvas = {
   label: string;
   filePath?: string;
   status?: TaskCanvasStatus;
+};
+
+export type TaskCanvasRecall = TaskCanvas & {
+  canvas: string;
 };
 
 export type L15JudgmentSource = "rules" | "llm" | "fallback";
