@@ -5,6 +5,7 @@ import { buildMemorySummaryKeyboard, buildSkillDraftKeyboard, uiCallbacks } from
 import { buildRichMemorySummary, renderMemorySummaryScreen, renderSkillDraftScreen } from "../ui/renderers";
 import type { MemoryService } from "../../memory/core/service";
 import { truncateText } from "../../utils/text";
+import { waitForCallbackData, waitForTextInput } from "./waits";
 
 export const skillDraftConversationId = "skill-draft";
 
@@ -12,6 +13,10 @@ const skillDraftCallbacks = {
   back: "skill-draft:back",
   taskPrefix: "skill-draft:task:",
 } as const;
+
+function isSkillDraftCallbackData(data: string | undefined) {
+  return data === uiCallbacks.memory || data === uiCallbacks.generateSkillDraft || data === skillDraftCallbacks.back || data?.startsWith(skillDraftCallbacks.taskPrefix) === true;
+}
 
 export type SkillDraftConversationDeps = {
   memory: MemoryService;
@@ -84,7 +89,7 @@ export function createSkillDraftConversation(deps: SkillDraftConversationDeps) {
     await render(ctx);
 
     while (true) {
-      const action = await conversation.waitFor("callback_query:data");
+      const action = await waitForCallbackData(conversation, isSkillDraftCallbackData);
       await action.answerCallbackQuery();
       note = undefined;
 
@@ -122,7 +127,7 @@ export function createSkillDraftConversation(deps: SkillDraftConversationDeps) {
           }
 
           await action.reply("Kirim focus skill, atau '-' untuk tanpa focus.");
-          const focusCtx = await conversation.waitFor("message:text");
+          const focusCtx = await waitForTextInput(conversation);
           const rawFocus = focusCtx.message.text.trim();
           const skillFocus = rawFocus && rawFocus !== "-" ? rawFocus : undefined;
           const result = await conversation.external(() =>

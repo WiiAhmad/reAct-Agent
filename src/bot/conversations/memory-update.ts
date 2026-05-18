@@ -7,6 +7,7 @@ import type { MemoryService } from "../../memory/core/service";
 import { MemoryUpdateSettingsService, type MemoryUpdateSettingsRow } from "../../services/memory-update-settings";
 import { validateCronExpression } from "../../services/schedules";
 import { startTelegramMemoryUpdateRun } from "./memory-update-runner";
+import { waitForCallbackData, waitForTextInput } from "./waits";
 
 export type MemoryUpdateConversationDeps = {
   memory: MemoryService;
@@ -20,20 +21,28 @@ export const memoryUpdateCallbacks = {
   back: "memory-update:back",
 } as const;
 
-type MemoryUpdateCallbackData = (typeof memoryUpdateCallbacks)[keyof typeof memoryUpdateCallbacks];
-
 const memoryUpdateCallbackData = new Set<string>(Object.values(memoryUpdateCallbacks));
+const scheduleCallbackData = new Set<string>([
+  uiCallbacks.schedulePreset10m,
+  uiCallbacks.schedulePreset30m,
+  uiCallbacks.schedulePreset1h,
+  uiCallbacks.schedulePreset6h,
+  uiCallbacks.schedulePreset12h,
+  uiCallbacks.schedulePreset24h,
+  uiCallbacks.customCron,
+  uiCallbacks.cancel,
+]);
 
-function isMemoryUpdateCallbackData(data: string | undefined): data is MemoryUpdateCallbackData {
-  return data !== undefined && memoryUpdateCallbackData.has(data);
+function isCallbackDataIn(dataSet: ReadonlySet<string>) {
+  return (data: string | undefined) => data !== undefined && dataSet.has(data);
 }
 
 async function waitForMemoryUpdateCallback(conversation: BotConversation) {
-  const action = await conversation.waitFor("callback_query:data", { next: true });
-  if (!isMemoryUpdateCallbackData(action.callbackQuery.data)) {
-    await conversation.skip({ next: true });
-  }
-  return action;
+  return waitForCallbackData(conversation, isCallbackDataIn(memoryUpdateCallbackData));
+}
+
+async function waitForScheduleCallback(conversation: BotConversation) {
+  return waitForCallbackData(conversation, isCallbackDataIn(scheduleCallbackData));
 }
 
 function resolveUserId(ctx: Context) {
@@ -77,7 +86,7 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
       reply_markup: buildSchedulePresetKeyboard(),
     });
 
-    const choice = await conversation.waitFor("callback_query:data");
+    const choice = await waitForScheduleCallback(conversation);
     await choice.answerCallbackQuery();
 
     switch (choice.callbackQuery.data) {
@@ -96,7 +105,7 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
       case uiCallbacks.customCron: {
         while (true) {
           await ctx.reply("Kirim cron expression untuk Memory Update.");
-          const cronCtx = await conversation.waitFor("message:text");
+          const cronCtx = await waitForTextInput(conversation);
           const cronExpr = cronCtx.message.text.trim();
           if (!cronExpr) {
             await cronCtx.reply("Cron expression tidak boleh kosong.");

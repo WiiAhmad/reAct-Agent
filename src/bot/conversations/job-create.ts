@@ -3,10 +3,26 @@ import type { Context } from "grammy";
 import { buildSchedulePresetKeyboard, uiCallbacks } from "../ui/keyboards";
 import { validateCronExpression } from "../../services/schedules";
 import type { AutonomousJobService } from "../../services/autonomous-jobs";
+import { waitForCallbackData, waitForTextInput } from "./waits";
 
 export type JobCreateConversationDeps = {
   autonomousJobs: AutonomousJobService;
 };
+
+const scheduleCallbackData = new Set<string>([
+  uiCallbacks.schedulePreset10m,
+  uiCallbacks.schedulePreset30m,
+  uiCallbacks.schedulePreset1h,
+  uiCallbacks.schedulePreset6h,
+  uiCallbacks.schedulePreset12h,
+  uiCallbacks.schedulePreset24h,
+  uiCallbacks.customCron,
+  uiCallbacks.cancel,
+]);
+
+function isScheduleCallbackData(data: string | undefined) {
+  return data !== undefined && scheduleCallbackData.has(data);
+}
 
 function resolveChatId(ctx: Context) {
   return String(ctx.chat?.id ?? "unknown");
@@ -22,7 +38,7 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
       reply_markup: buildSchedulePresetKeyboard(),
     });
 
-    const choice = await conversation.waitFor("callback_query:data");
+    const choice = await waitForCallbackData(conversation, isScheduleCallbackData);
     await choice.answerCallbackQuery();
 
     switch (choice.callbackQuery.data) {
@@ -41,7 +57,7 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
       case uiCallbacks.customCron: {
         while (true) {
           await ctx.reply("Kirim cron expression untuk autonomous job.");
-          const cronCtx = await conversation.waitFor("message:text");
+          const cronCtx = await waitForTextInput(conversation);
           const cronExpr = cronCtx.message.text.trim();
           if (!cronExpr) {
             await cronCtx.reply("Cron expression tidak boleh kosong.");
@@ -73,7 +89,7 @@ export function createJobCreateConversation(deps: JobCreateConversationDeps) {
     let prompt = "";
 
     while (!prompt) {
-      const promptCtx = await conversation.waitFor("message:text");
+      const promptCtx = await waitForTextInput(conversation);
       prompt = promptCtx.message.text.trim();
       if (!prompt) {
         await promptCtx.reply("Prompt tidak boleh kosong.");
