@@ -360,3 +360,71 @@ test("offload writes semantic L1 evidence to SQLite and JSONL", async () => {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("task-scoped offload patches semantic Mermaid canvas and records node mapping", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-offload-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+      taskCanvasDir: join(tempDir, "task-canvases"),
+    });
+    await backend.init();
+    const task = await backend.createTaskCanvas({ chatId: "c1", userId: "u1", label: "semantic-mermaid" });
+
+    let callCount = 0;
+    const llm = {
+      async complete({ messages }: { messages: Array<{ content: string }> }) {
+        callCount += 1;
+        if (callCount === 1) {
+          return { content: JSON.stringify({ summary: "Ran failing test and found missing semantic canvas patch.", score: 9 }), toolCalls: [] };
+        }
+        const payload = JSON.parse(messages[1]!.content) as { entries: Array<{ nodeId: string }> };
+        return {
+          content: JSON.stringify({
+            fileAction: "write",
+            mmdContent: "flowchart TD\n  N1[\"Test failure<br/>status: done<br/>summary: Missing semantic canvas patch\"]\n",
+            replaceBlocks: [],
+            nodeMapping: { [payload.entries[0]!.nodeId]: "N1" },
+          }),
+          toolCalls: [],
+        };
+      },
+    };
+
+    const service = new OffloadService(backend, {
+      offloadMinChars: 1000,
+      offloadSummaryChars: 80,
+      l1: { enabled: true, mode: "local", maxSummaryChars: 160, defaultScore: 5 },
+      l2: { enabled: true, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+      jsonlEnabled: false,
+    }, llm as any);
+
+    const result = await service.offloadToolResult({
+      chatId: "c1",
+      userId: "u1",
+      taskId: task.id,
+      toolCallId: "call_1",
+      toolName: "bun_test",
+      args: {},
+      rawResult: "FAIL Missing semantic canvas patch",
+    });
+
+    const canvas = await backend.getTaskCanvas("c1");
+    expect(canvas).toContain("flowchart TD");
+    expect(canvas).toContain("Test failure");
+    expect(canvas).toContain("Missing semantic canvas patch");
+
+    const evidence = await backend.listL1EvidenceEntriesForTask(task.id, 10);
+    expect(evidence[0]).toEqual(expect.objectContaining({ nodeId: result.nodeId, mmdNodeId: "N1", status: "mapped" }));
+
+    const taskNodes = await backend.listTaskGraphNodesForTask(task.id, 10);
+    expect(taskNodes[0]).toEqual(expect.objectContaining({ nodeId: result.nodeId, mmdNodeId: "N1" }));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

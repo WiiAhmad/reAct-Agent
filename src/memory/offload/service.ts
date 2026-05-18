@@ -5,6 +5,7 @@ import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "../core/backend";
 import type { EventMeta } from "../core/types";
 import { generateL1EvidenceSummary } from "./l1";
+import { applyL2Patch, generateL2MermaidPatch } from "./l2";
 
 type OffloadServiceOptions = {
   offloadMinChars: number;
@@ -139,8 +140,6 @@ export class OffloadService {
 
       await this.backend.insertOffloadRefWithTaskGraphNode(ref, offloadedNode);
       metadataCommitted = true;
-
-      await this.writeTaskCanvas(input.chatId, input.taskId);
     } catch {
       if (metadataCommitted) {
         await this.tryDeleteOffloadMetadata(nodeId);
@@ -173,6 +172,7 @@ export class OffloadService {
     }
 
     await this.persistL1Evidence(input, nodeId, summary, relativePath, score, createdAt);
+    await this.tryWriteTaskCanvas(input.chatId, input.taskId);
 
     return {
       content: [
@@ -273,13 +273,75 @@ export class OffloadService {
     if (!taskId) {
       return;
     }
-    const nodes = await this.backend.listTaskGraphNodesForTask(taskId, 80);
+
     const canvasPath = await this.backend.getTaskCanvasFilePath(taskId);
     if (!canvasPath) {
       return;
     }
+
+    const pending = await this.backend.listPendingL1EvidenceEntriesForTask(taskId, this.options.l2.triggerMinEntries);
+    if (this.options.l2.enabled && pending.length >= this.options.l2.triggerMinEntries) {
+      const currentMmd = await this.readExistingCanvas(canvasPath.absolutePath);
+      const task = await this.backend.getTaskCanvasById(pending[0]!.userId, taskId);
+      const patch = task
+        ? await generateL2MermaidPatch(this.llm, {
+            taskLabel: task.label,
+            currentMmd,
+            entries: pending.map((entry) => ({
+              nodeId: entry.nodeId,
+              toolName: entry.toolName,
+              summary: entry.summary,
+              score: entry.score,
+              resultRef: entry.resultRef,
+            })),
+            maxCanvasChars: this.options.l2.maxCanvasChars,
+          })
+        : undefined;
+
+      if (patch) {
+        const nextMmd = applyL2Patch(currentMmd, patch);
+        await mkdir(dirname(canvasPath.absolutePath), { recursive: true });
+        await this.writeTextFile(canvasPath.absolutePath, nextMmd);
+        await this.backend.updateL1EvidenceNodeMapping(taskId, patch.nodeMapping);
+        if (task) {
+          await this.backend.upsertTaskCanvasSearchText({
+            taskId,
+            chatId,
+            userId: task.userId,
+            label: task.label,
+            status: task.status,
+            filePath: task.filePath,
+            canvas: nextMmd,
+          });
+        }
+        return;
+      }
+    }
+
+    const nodes = await this.backend.listTaskGraphNodesForTask(taskId, 80);
+    const fallbackMmd = `${this.buildTaskCanvas(chatId, nodes)}\n`;
     await mkdir(dirname(canvasPath.absolutePath), { recursive: true });
-    await this.writeTextFile(canvasPath.absolutePath, `${this.buildTaskCanvas(chatId, nodes)}\n`);
+    await this.writeTextFile(canvasPath.absolutePath, fallbackMmd);
+    const task = nodes[0]?.userId ? await this.backend.getTaskCanvasById(nodes[0].userId, taskId) : undefined;
+    if (task) {
+      await this.backend.upsertTaskCanvasSearchText({
+        taskId,
+        chatId,
+        userId: task.userId,
+        label: task.label,
+        status: task.status,
+        filePath: task.filePath,
+        canvas: fallbackMmd,
+      });
+    }
+  }
+
+  private async readExistingCanvas(path: string): Promise<string> {
+    try {
+      return await Bun.file(path).text();
+    } catch {
+      return "flowchart TD\n";
+    }
   }
 
   private async tryWriteTaskCanvas(chatId: string, taskId: number | undefined): Promise<void> {
