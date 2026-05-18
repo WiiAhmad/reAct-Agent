@@ -5,6 +5,7 @@ import { config } from "../config";
 import type { LlmProvider } from "../agent/types";
 import { runReactAgent } from "../agent/react-agent";
 import type { MemoryService } from "../memory/core/service";
+import { emitMemoryUpdateProgress, type MemoryUpdateProgressReporter, type MemoryUpdateSource } from "../memory/pipeline/progress";
 import { AutonomousJobService, type AutonomousJobRow } from "../services/autonomous-jobs";
 import { MemoryUpdateSettingsService } from "../services/memory-update-settings";
 import { describeSchedule, normalizeSchedule } from "../services/schedules";
@@ -32,6 +33,8 @@ export type MemoryUpdateRunNowInput = {
   memory: MemoryService;
   settings: MemoryUpdateSettingsService;
   userId: string;
+  source?: MemoryUpdateSource;
+  onProgress?: MemoryUpdateProgressReporter;
   nowUnix?: number;
   finishedUnix?: number;
 };
@@ -62,6 +65,25 @@ function logCronEvent(event: string, details: Record<string, unknown>) {
 
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function logMemoryUpdateEvent(event: string, details: Record<string, unknown>) {
+  console.log(`[memory-update:${event}]`, details);
+}
+
+async function reportMemoryUpdateProgress(
+  reporter: MemoryUpdateProgressReporter | undefined,
+  event: Parameters<typeof emitMemoryUpdateProgress>[1],
+) {
+  logMemoryUpdateEvent(`${event.stage}-${event.status}`, event);
+  try {
+    await emitMemoryUpdateProgress(reporter, event);
+  } catch (error) {
+    console.error("Failed to report memory update progress", {
+      event,
+      error: toErrorMessage(error),
+    });
+  }
 }
 
 export function mapAutonomousJobRow(row: AutonomousJobDbRow): AutonomousJobRow {
@@ -131,17 +153,53 @@ export async function runOneAutonomousJob(input: AutonomousRunInput) {
 }
 
 export async function runOneMemoryUpdateNow(input: MemoryUpdateRunNowInput) {
+  const source = input.source ?? "scheduler";
   const now = input.nowUnix ?? unixNow();
-  const finishedAt = input.finishedUnix ?? unixNow();
+  const startedAtMs = Date.now();
   input.settings.markRunStarted(input.userId, now);
 
+  await reportMemoryUpdateProgress(input.onProgress, {
+    source,
+    userId: input.userId,
+    stage: "run",
+    status: "start",
+    startedAtUnix: now,
+  });
+
   try {
-    const maintenanceResult = await input.memory.runMaintenanceForUser(input.userId, true);
+    const maintenanceResult = await input.memory.runMaintenanceForUser(input.userId, true, {
+      source,
+      onProgress: (event) => reportMemoryUpdateProgress(input.onProgress, event),
+    });
+    const finishedAt = input.finishedUnix ?? unixNow();
     const finished = input.settings.markRunFinished(input.userId, finishedAt, "success", null);
+    await reportMemoryUpdateProgress(input.onProgress, {
+      source,
+      userId: input.userId,
+      stage: "run",
+      status: "complete",
+      startedAtUnix: now,
+      finishedAtUnix: finishedAt,
+      durationMs: Date.now() - startedAtMs,
+      createdAtoms: maintenanceResult.l1Created,
+      scenarioId: maintenanceResult.l2ScenarioId,
+      personaUpdated: maintenanceResult.personaUpdated,
+    });
     return { settings: finished, maintenanceResult };
   } catch (error) {
     const message = toErrorMessage(error);
+    const finishedAt = input.finishedUnix ?? unixNow();
     input.settings.markRunFinished(input.userId, finishedAt, "error", message);
+    await reportMemoryUpdateProgress(input.onProgress, {
+      source,
+      userId: input.userId,
+      stage: "run",
+      status: "error",
+      startedAtUnix: now,
+      finishedAtUnix: finishedAt,
+      durationMs: Date.now() - startedAtMs,
+      error: message,
+    });
     throw error;
   }
 }

@@ -11,7 +11,8 @@ import { splitTelegramMessage, truncateText } from "../utils/text";
 import { type BotContext } from "./context";
 import { buildHelpKeyboard, buildMainMenuKeyboard, buildMemorySummaryKeyboard, buildStartKeyboard, uiCallbacks } from "./ui/keyboards";
 import { buildRichMemorySummary, renderHelpScreen, renderJobsScreen, renderMainMenuScreen, renderMemorySummaryScreen, renderStartScreen } from "./ui/renderers";
-import { createMemoryUpdateConversation, memoryUpdateConversationId } from "./conversations/memory-update";
+import { createMemoryUpdateConversation, memoryUpdateCallbacks, memoryUpdateConversationId } from "./conversations/memory-update";
+import { startTelegramMemoryUpdateRun } from "./conversations/memory-update-runner";
 import { createSkillDraftConversation, skillDraftConversationId } from "./conversations/skill-draft";
 import { createJobCreateConversation } from "./conversations/job-create";
 import { createJobDetailConversation, jobDetailConversationId } from "./conversations/job-detail";
@@ -36,6 +37,17 @@ function resolveChatId(ctx: BotContext) {
 
 function resolveUserId(ctx: BotContext) {
   return String(ctx.from?.id ?? ctx.chat?.id ?? "unknown");
+}
+
+function resolveMemoryUpdateCallbackTarget(ctx: BotContext) {
+  if (ctx.chat?.id == null || ctx.from?.id == null) {
+    return null;
+  }
+
+  return {
+    chatId: String(ctx.chat.id),
+    userId: String(ctx.from.id),
+  };
 }
 
 function buildJobsListKeyboard(jobs: AutonomousJobRow[]) {
@@ -162,6 +174,28 @@ export function createTelegramBot(deps: BotDeps) {
   bot.callbackQuery(uiCallbacks.memoryUpdate, async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.conversation.enter(memoryUpdateConversationId);
+  });
+
+  bot.callbackQuery(memoryUpdateCallbacks.runNow, async (ctx) => {
+    const target = resolveMemoryUpdateCallbackTarget(ctx);
+    if (!target) {
+      await ctx.answerCallbackQuery({
+        text: "Tidak bisa menjalankan Memory Update dari tombol ini.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+    const result = await startTelegramMemoryUpdateRun({
+      memory: deps.memory,
+      settings: deps.memoryUpdateSettings,
+      userId: target.userId,
+      sendMessage: (text) => ctx.api.sendMessage(target.chatId, text),
+    });
+    if (result.status === "already-running") {
+      await ctx.reply("Memory update masih berjalan untuk user ini.");
+    }
   });
 
   bot.callbackQuery(uiCallbacks.skillDrafts, async (ctx) => {

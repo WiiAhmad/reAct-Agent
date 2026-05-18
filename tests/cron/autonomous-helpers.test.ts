@@ -115,3 +115,122 @@ test("runOneMemoryUpdateNow runs maintenance and marks the settings as successfu
   expect(result.settings.lastStatus).toBe("success");
   expect(result.settings.lastFinishedAt).toBe(finishedAt);
 });
+
+test("runOneMemoryUpdateNow forwards source and progress reporter to memory maintenance", async () => {
+  const db = makeDb();
+  const settings = new MemoryUpdateSettingsService(db);
+  const setting = settings.getOrCreate("user-1");
+  const progressEvents: string[] = [];
+  const maintenanceCalls: Array<{ userId: string; force: boolean; source: string | undefined }> = [];
+
+  const result = await runOneMemoryUpdateNow({
+    memory: {
+      runMaintenanceForUser: async (userId: string, force = false, options?: any) => {
+        maintenanceCalls.push({ userId, force, source: options?.source });
+        await options?.onProgress?.({ source: options.source, userId, stage: "l1", status: "complete", createdAtoms: 2 });
+        return { l1Created: 2, l2ScenarioId: 18, personaUpdated: true };
+      },
+    } as any,
+    settings,
+    userId: setting.userId,
+    source: "telegram",
+    onProgress: async (event) => {
+      progressEvents.push(`${event.source}:${event.stage}:${event.status}:${event.createdAtoms ?? ""}`);
+    },
+    nowUnix: 1_779_000_000,
+    finishedUnix: 1_779_000_030,
+  });
+
+  expect(maintenanceCalls).toEqual([{ userId: "user-1", force: true, source: "telegram" }]);
+  expect(progressEvents).toEqual([
+    "telegram:run:start:",
+    "telegram:l1:complete:2",
+    "telegram:run:complete:2",
+  ]);
+  expect(result.maintenanceResult).toEqual({ l1Created: 2, l2ScenarioId: 18, personaUpdated: true });
+  expect(result.settings.lastStatus).toBe("success");
+});
+
+test("runOneMemoryUpdateNow succeeds when progress reporter rejects", async () => {
+  const db = makeDb();
+  const settings = new MemoryUpdateSettingsService(db);
+  const setting = settings.getOrCreate("user-1");
+  const progressEvents: string[] = [];
+  const maintenanceCalls: Array<{ userId: string; force: boolean }> = [];
+
+  const result = await runOneMemoryUpdateNow({
+    memory: {
+      runMaintenanceForUser: async (userId: string, force = false, options?: any) => {
+        maintenanceCalls.push({ userId, force });
+        await options?.onProgress?.({ source: options.source, userId, stage: "l1", status: "complete", createdAtoms: 3 });
+        return { l1Created: 3, l2ScenarioId: 19, personaUpdated: false };
+      },
+    } as any,
+    settings,
+    userId: setting.userId,
+    source: "scheduler",
+    onProgress: async (event) => {
+      progressEvents.push(`${event.stage}:${event.status}`);
+      throw new Error(`reporter failed at ${event.stage}:${event.status}`);
+    },
+    nowUnix: 1_779_000_000,
+    finishedUnix: 1_779_000_030,
+  });
+
+  expect(maintenanceCalls).toEqual([{ userId: "user-1", force: true }]);
+  expect(progressEvents).toEqual(["run:start", "l1:complete", "run:complete"]);
+  expect(result.maintenanceResult).toEqual({ l1Created: 3, l2ScenarioId: 19, personaUpdated: false });
+  expect(result.settings.lastStatus).toBe("success");
+  expect(result.settings.lastFinishedAt).toBe(1_779_000_030);
+});
+
+test("runOneMemoryUpdateNow rethrows the maintenance failure when error reporting rejects", async () => {
+  const db = makeDb();
+  const settings = new MemoryUpdateSettingsService(db);
+  const setting = settings.getOrCreate("user-1");
+
+  await expect(runOneMemoryUpdateNow({
+    memory: {
+      runMaintenanceForUser: async () => {
+        throw new Error("LLM timeout");
+      },
+    } as any,
+    settings,
+    userId: setting.userId,
+    source: "scheduler",
+    onProgress: async (event) => {
+      if (event.status === "error") {
+        throw new Error("reporter failed while reporting error");
+      }
+    },
+    nowUnix: 1_779_000_000,
+    finishedUnix: 1_779_000_030,
+  })).rejects.toThrow("LLM timeout");
+
+  const refreshed = settings.getOrCreate("user-1");
+  expect(refreshed.lastStatus).toBe("error");
+  expect(refreshed.lastError).toBe("LLM timeout");
+});
+
+test("runOneMemoryUpdateNow marks settings as error and rethrows maintenance failures", async () => {
+  const db = makeDb();
+  const settings = new MemoryUpdateSettingsService(db);
+  const setting = settings.getOrCreate("user-1");
+
+  await expect(runOneMemoryUpdateNow({
+    memory: {
+      runMaintenanceForUser: async () => {
+        throw new Error("LLM timeout");
+      },
+    } as any,
+    settings,
+    userId: setting.userId,
+    source: "scheduler",
+    nowUnix: 1_779_000_000,
+    finishedUnix: 1_779_000_030,
+  })).rejects.toThrow("LLM timeout");
+
+  const refreshed = settings.getOrCreate("user-1");
+  expect(refreshed.lastStatus).toBe("error");
+  expect(refreshed.lastError).toBe("LLM timeout");
+});

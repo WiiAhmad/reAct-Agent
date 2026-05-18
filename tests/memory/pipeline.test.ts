@@ -123,6 +123,120 @@ test("pipeline produces atoms, scenarios, persona, and lineage links", async () 
   }
 });
 
+test("pipeline emits progress events for L1, L2, and L3", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-pipeline-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+    const logs = new InteractionLogService(backend, {
+      enabled: false,
+      exportDir: join(tempDir, "jsonl"),
+    });
+    const pipeline = new PipelineCoordinator(backend, fakeLlm);
+    const events: string[] = [];
+
+    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "Please use Bun for this bot.", mode: "chat" });
+    const result = await pipeline.runMaintenanceForUser("u1", true, {
+      source: "telegram",
+      onProgress: async (event) => {
+        events.push(`${event.stage}:${event.status}`);
+      },
+    });
+
+    expect(result).toEqual({ l1Created: 1, l2ScenarioId: 1, personaUpdated: true });
+    expect(events).toEqual([
+      "l1:start",
+      "l1:complete",
+      "l2:start",
+      "l2:complete",
+      "l3:start",
+      "l3:complete",
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("pipeline ignores progress reporter failures", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-pipeline-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+    const logs = new InteractionLogService(backend, {
+      enabled: false,
+      exportDir: join(tempDir, "jsonl"),
+    });
+    const pipeline = new PipelineCoordinator(backend, fakeLlm);
+    const events: string[] = [];
+
+    await logs.logUserMessage({ chatId: "c1", userId: "u1", content: "Please use Bun for this bot.", mode: "chat" });
+    const result = await pipeline.runMaintenanceForUser("u1", true, {
+      source: "telegram",
+      onProgress: async (event) => {
+        events.push(`${event.stage}:${event.status}`);
+        throw new Error("reporter failed");
+      },
+    });
+
+    expect(result).toEqual({ l1Created: 1, l2ScenarioId: 1, personaUpdated: true });
+    expect(events).toEqual([
+      "l1:start",
+      "l1:complete",
+      "l2:start",
+      "l2:complete",
+      "l3:start",
+      "l3:complete",
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("pipeline emits skip events when force maintenance has no atoms to aggregate", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-pipeline-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+    const pipeline = new PipelineCoordinator(backend, fakeLlm);
+    const events: string[] = [];
+
+    const result = await pipeline.runMaintenanceForUser("u1", true, {
+      source: "scheduler",
+      onProgress: async (event) => {
+        events.push(`${event.stage}:${event.status}:${event.reason ?? ""}`);
+      },
+    });
+
+    expect(result).toEqual({ l1Created: 0, l2ScenarioId: undefined, personaUpdated: false });
+    expect(events).toEqual([
+      "l1:start:",
+      "l1:complete:",
+      "l2:skip:no_atoms",
+      "l3:skip:no_scenario",
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("pipeline does not advance the L1 checkpoint when L1 returns invalid JSON", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-pipeline-"));
 

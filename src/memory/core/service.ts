@@ -10,6 +10,7 @@ import { OffloadService, type OffloadToolResult } from "../offload/service";
 import { runL15Judgment } from "../offload/l15";
 import type { L15JudgmentResult } from "../offload/types";
 import { PipelineCoordinator, type PipelineMaintenanceResult } from "../pipeline/coordinator";
+import type { MemoryUpdateProgressOptions } from "../pipeline/progress";
 import { RecallService } from "../recall/service";
 
 export type MemoryServiceRecall = {
@@ -485,8 +486,8 @@ export class MemoryService {
     return { ok: true, skillName: generated.skillName, filePath: draft.relativePath };
   }
 
-  async runMaintenanceForUser(userId: string, force = false): Promise<PipelineMaintenanceResult> {
+  async runMaintenanceForUser(userId: string, force = false, options: MemoryUpdateProgressOptions = {}): Promise<PipelineMaintenanceResult> {
     const { pipelineCoordinator } = getState(this);
-    return pipelineCoordinator.runMaintenanceForUser(userId, force);
+    return pipelineCoordinator.runMaintenanceForUser(userId, force, options);
   }
 }

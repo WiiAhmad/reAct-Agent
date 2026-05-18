@@ -29,7 +29,8 @@ It is not a public slash command.
 
 It is accessed from the Telegram menu and can:
 
-- run memory maintenance now
+- run memory maintenance now without blocking the Telegram conversation flow
+- send progress messages while L1, L2, and L3 complete
 - enable or disable automatic updates
 - choose a preset cadence
 - accept a custom cron schedule when needed

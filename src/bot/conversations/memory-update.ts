@@ -5,15 +5,15 @@ import { buildMemorySummaryKeyboard, buildSchedulePresetKeyboard, uiCallbacks } 
 import { buildRichMemorySummary, renderMemorySummaryScreen } from "../ui/renderers";
 import type { MemoryService } from "../../memory/core/service";
 import { MemoryUpdateSettingsService, type MemoryUpdateSettingsRow } from "../../services/memory-update-settings";
-import { runOneMemoryUpdateNow } from "../../cron/autonomous";
 import { validateCronExpression } from "../../services/schedules";
+import { startTelegramMemoryUpdateRun } from "./memory-update-runner";
 
 export type MemoryUpdateConversationDeps = {
   memory: MemoryService;
   settings: MemoryUpdateSettingsService;
 };
 
-const memoryUpdateCallbacks = {
+export const memoryUpdateCallbacks = {
   runNow: "memory-update:run-now",
   toggleEnabled: "memory-update:toggle-enabled",
   changeSchedule: "memory-update:change-schedule",
@@ -149,12 +149,25 @@ export function createMemoryUpdateConversation(deps: MemoryUpdateConversationDep
           return;
         }
         case memoryUpdateCallbacks.runNow: {
-          try {
-            const result = await conversation.external(() => runOneMemoryUpdateNow({ memory: deps.memory, settings: deps.settings, userId }));
-            note = `Run now selesai: ${result.maintenanceResult.l1Created ? "L1" : ""}${result.maintenanceResult.l2ScenarioId ? ` L2#${result.maintenanceResult.l2ScenarioId}` : ""}${result.maintenanceResult.personaUpdated ? " L3" : ""}`.trim();
-          } catch (error) {
-            note = error instanceof Error ? error.message : String(error);
+          const rawChatId = action.chat?.id ?? ctx.chat?.id;
+          if (rawChatId == null) {
+            note = "Tidak bisa menjalankan Memory Update dari tombol ini.";
+            await render(action);
+            break;
           }
+
+          const chatId = String(rawChatId);
+          const result = await conversation.external(async () => {
+            return startTelegramMemoryUpdateRun({
+              memory: deps.memory,
+              settings: deps.settings,
+              userId,
+              sendMessage: (text) => action.api.sendMessage(chatId, text),
+            });
+          });
+          note = result.status === "started"
+            ? "Run now dimulai. Progress dikirim sebagai pesan baru."
+            : "Memory update masih berjalan untuk user ini.";
           await render(action);
           break;
         }

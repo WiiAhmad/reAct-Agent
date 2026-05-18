@@ -50,7 +50,8 @@ It is not a public slash command.
 
 Memory Update can be used to:
 
-- run memory maintenance now
+- run memory maintenance now without blocking the Telegram conversation flow
+- receive progress messages while L1, L2, and L3 complete
 - enable or disable automatic updates
 - choose a preset cadence
 - enter a custom cron schedule when needed
