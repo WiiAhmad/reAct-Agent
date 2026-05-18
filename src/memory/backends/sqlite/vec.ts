@@ -3,6 +3,10 @@ import * as sqliteVec from "sqlite-vec";
 
 const VECTOR_DIMENSIONS = 64;
 
+export function vectorDimensions(): number {
+  return VECTOR_DIMENSIONS;
+}
+
 function normalizeEmbeddingText(input: string): string {
   return (input.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join("");
 }
@@ -20,8 +24,12 @@ export function loadSqliteVec(db: Database): void {
   sqliteVec.load(db as never);
 }
 
-export function ensureSqliteVecTable(db: Database): void {
-  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memory_atoms_vec USING vec0(embedding float[${VECTOR_DIMENSIONS}])`);
+export function ensureSqliteVecTable(db: Database, tableName = "memory_atoms_vec"): void {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
+    throw new Error(`Invalid sqlite-vec table name: ${tableName}`);
+  }
+
+  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ${tableName} USING vec0(embedding float[${VECTOR_DIMENSIONS}])`);
 }
 
 export function embedTextToVector(text: string): Float32Array {

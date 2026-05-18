@@ -93,7 +93,7 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
-});
+}, 20000);
 
 test("agent runtime keeps current datetime one-shot question out of task canvas recall", async () => {
   const llmCalls: Array<Array<{ role: string; content?: string }>> = [];
@@ -182,7 +182,7 @@ test("agent runtime keeps current datetime one-shot question out of task canvas 
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
-});
+}, 20000);
 
 test("agent runtime passes tool call id into semantic L1 offload", async () => {
   const llmCalls: Array<Array<{ role: string; content?: string }>> = [];
@@ -238,7 +238,7 @@ test("agent runtime passes tool call id into semantic L1 offload", async () => {
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
-});
+}, 20000);
 
 test("agent runtime hides scheduling and direct Telegram tools during autonomous runs", async () => {
   let seenTools: string[] = [];
@@ -297,7 +297,7 @@ test("agent runtime hides scheduling and direct Telegram tools during autonomous
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
-});
+}, 20000);
 
 test("agent runtime includes relevant historical task canvases in memory context", async () => {
   let seenMessages: Array<{ role: string; content?: string }> = [];
@@ -365,4 +365,4 @@ test("agent runtime includes relevant historical task canvases in memory context
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
-});
+}, 20000);

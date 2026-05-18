@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { LlmProvider } from "../../agent/types";
 import { SqliteMemoryBackend } from "../backends/sqlite/backend";
+import { SqliteMemoryStore } from "../backends/sqlite/store";
 import { MemoryService } from "../core/service";
 import { InteractionLogService } from "../events/service";
 import { OffloadService } from "../offload/service";
@@ -113,7 +114,14 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
   });
   await backend.init();
 
-  const recallService = new RecallService(backend, taskRecall);
+  const store = new SqliteMemoryStore(db, {
+    sqliteVecEnabled: config.memory.sqliteVecEnabled,
+    bm25Enabled: true,
+    bm25Language: "en",
+  });
+  await store.init({ provider: "local", model: "deterministic-local", dimensions: 64 });
+
+  const recallService = new RecallService(backend, taskRecall, store);
   const interactionLogService = new InteractionLogService(backend, {
     enabled: config.memory.jsonlExportEnabled,
     exportDir: config.storage.memoryJsonlExportDir,
@@ -126,7 +134,7 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
     l2,
     jsonlEnabled: config.memory.jsonlExportEnabled,
   }, llm);
-  const pipelineCoordinator = new PipelineCoordinator(backend, llm);
+  const pipelineCoordinator = new PipelineCoordinator(backend, llm, store);
 
   return new MemoryService(
     backend,
@@ -148,5 +156,6 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
     offloadService,
     pipelineCoordinator,
     interactionLogService,
+    store,
   );
 }

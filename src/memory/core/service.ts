@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentMessage, LlmProvider } from "../../agent/types";
 import { generateL4Skill, validateGeneratedSkill, writeDraftSkill } from "../offload/l4";
 import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "./backend";
+import { canonicalizeMemoryAtomText, mergeNumberSets } from "./canonical";
+import type { IMemoryStore, L1Record, ProfileRecord } from "./store/types";
 import type { ConversationTurnRole, EventMeta, InteractionEvent, TaskCanvas, TaskCanvasRecall } from "./types";
 import { InteractionLogService } from "../events/service";
 import { OffloadService, type OffloadToolResult } from "../offload/service";
@@ -117,11 +120,54 @@ type MemoryServiceState = {
   interactionLogService: InteractionLogService;
   offloadService: OffloadService;
   pipelineCoordinator: PipelineCoordinator;
+  store?: IMemoryStore;
   llm: LlmProvider;
   options: MemoryServiceOptions;
 };
 
 const memoryServiceState = new WeakMap<MemoryService, MemoryServiceState>();
+
+function sessionKey(chatId: string, userId: string): string {
+  return `telegram:${chatId}:${userId}`;
+}
+
+function profileCount(profiles: ProfileRecord[], userId: string, type: ProfileRecord["type"]): number {
+  return profiles.filter((profile) => profile.userId === userId && profile.type === type).length;
+}
+
+function storeL1RecordId(userId: string, canonicalText: string): string {
+  const digest = createHash("sha256").update(`${userId}\0${canonicalText}`).digest("hex").slice(0, 24);
+  return `store:l1:${digest}`;
+}
+
+async function buildGenericStoreL1Record(store: IMemoryStore, input: SaveMemoryInput): Promise<L1Record> {
+  const canonicalText = canonicalizeMemoryAtomText(input.text);
+  if (!canonicalText) {
+    throw new Error("Memory atom canonical text cannot be empty");
+  }
+
+  const existing = (await store.queryL1Records({ userId: input.userId, type: input.sourceLayer ?? "L1", limit: Number.MAX_SAFE_INTEGER }))
+    .find((record) => canonicalizeMemoryAtomText(record.content) === canonicalText);
+  const now = new Date().toISOString();
+
+  return {
+    recordId: existing?.recordId ?? storeL1RecordId(input.userId, canonicalText),
+    userId: input.userId,
+    sessionKey: existing?.sessionKey ?? `generic:${input.userId}`,
+    sessionId: existing?.sessionId ?? "generic",
+    content: input.text,
+    type: input.sourceLayer ?? "L1",
+    priority: Math.max(existing?.priority ?? 0, input.importance ?? 3),
+    sceneName: existing?.sceneName ?? "generic memory",
+    timestampStr: now,
+    timestampStart: existing?.timestampStart ?? now,
+    timestampEnd: now,
+    sourceConversationIds: mergeNumberSets(existing?.sourceConversationIds ?? [], input.sourceConversationIds ?? []),
+    metadata: { ...(existing?.metadata ?? {}), source: "MemoryService.saveMemory", canonicalText },
+    createdTime: existing?.createdTime ?? now,
+    updatedTime: now,
+  };
+}
 
 function getState(service: MemoryService): MemoryServiceState {
   const state = memoryServiceState.get(service);
@@ -149,6 +195,7 @@ export class MemoryService {
       enabled: false,
       historyDir: resolve(options.dataDir, "history"),
     }),
+    store?: IMemoryStore,
   ) {
     memoryServiceState.set(this, {
       backend,
@@ -156,17 +203,34 @@ export class MemoryService {
       interactionLogService,
       offloadService,
       pipelineCoordinator,
+      store,
       llm,
       options,
     });
   }
 
   async recall(userId: string, query: string, maxResults: number, chatId?: string): Promise<MemoryServiceRecall> {
-    const { recallService, interactionLogService } = getState(this);
+    const { recallService, interactionLogService, store } = getState(this);
     const [recall, conversationRows] = await Promise.all([
       recallService.recall(userId, query, maxResults, chatId),
-      interactionLogService.searchConversations(userId, query, maxResults, chatId),
+      store ? Promise.resolve([]) : interactionLogService.searchConversations(userId, query, maxResults, chatId),
     ]);
+    const conversations = recall.conversations.length > 0
+      ? recall.conversations.map((conversation) => ({
+        id: conversation.id,
+        role: conversation.role,
+        content: conversation.content,
+        createdAt: conversation.createdAt,
+        created_at: conversation.createdAt,
+      }))
+      : conversationRows.map((conversation) => ({
+        id: conversation.id,
+        role: conversation.role,
+        content: conversation.content,
+        createdAt: conversation.created_at,
+        created_at: conversation.created_at,
+      }));
+
     return {
       persona: recall.persona,
       atoms: recall.atoms,
@@ -176,13 +240,7 @@ export class MemoryService {
         bodyMarkdown: scenario.bodyMarkdown,
         body_markdown: scenario.bodyMarkdown,
       })),
-      conversations: conversationRows.map((conversation) => ({
-        id: conversation.id,
-        role: conversation.role,
-        content: conversation.content,
-        createdAt: conversation.created_at,
-        created_at: conversation.created_at,
-      })),
+      conversations,
       taskCanvas: recall.taskCanvas,
       taskCanvases: recall.taskCanvases,
     };
@@ -224,7 +282,7 @@ export class MemoryService {
   }
 
   async memoryStatus(userId: string, chatId?: string): Promise<string> {
-    const { backend, interactionLogService, options } = getState(this);
+    const { backend, interactionLogService, options, store } = getState(this);
     const taskCanvasPath = async () => {
       if (!chatId) {
         return undefined;
@@ -242,15 +300,24 @@ export class MemoryService {
       const canvas = await backend.getTaskCanvas(chatId);
       return canvas ? backend.getTaskCanvasPath(chatId) : undefined;
     };
-    const [conversationCount, atomCount, scenarioCount, offloadRefCount, generatedSkillCount, persona, resolvedTaskCanvasPath] = await Promise.all([
-      interactionLogService.countConversations(userId, chatId),
-      backend.countMemoryAtoms(userId),
+    const profilesPromise = store?.pullProfiles ? store.pullProfiles() : Promise.resolve<ProfileRecord[] | undefined>(undefined);
+    const l0CountPromise = store
+      ? (chatId
+        ? Promise.resolve(store.queryL0ForL1(sessionKey(chatId, userId), 0, Number.MAX_SAFE_INTEGER)).then((rows) => rows.length)
+        : store.countL0(userId))
+      : interactionLogService.countConversations(userId, chatId);
+    const [conversationCount, atomCount, backendScenarioCount, offloadRefCount, generatedSkillCount, backendPersona, resolvedTaskCanvasPath, profiles] = await Promise.all([
+      l0CountPromise,
+      store ? store.countL1(userId) : backend.countMemoryAtoms(userId),
       backend.countMemoryScenarios(userId),
       backend.countOffloadRefs(userId),
       backend.countGeneratedSkills(userId),
       backend.getPersona(userId),
       taskCanvasPath(),
+      profilesPromise,
     ]);
+    const scenarioCount = profiles ? profileCount(profiles, userId, "l2") : backendScenarioCount;
+    const hasPersona = profiles ? profileCount(profiles, userId, "l3") > 0 : Boolean(backendPersona);
 
     return [
       `backend=${options.backendName}`,
@@ -258,7 +325,7 @@ export class MemoryService {
       `L0 conversations=${conversationCount}`,
       `L1 atoms=${atomCount}`,
       `L2 scenarios=${scenarioCount}`,
-      `L3 persona=${persona ? "yes" : "no"}`,
+      `L3 persona=${hasPersona ? "yes" : "no"}`,
       `offload_refs=${offloadRefCount}`,
       `offload_enabled=${options.offloadEnabled}`,
       `L1.5 enabled=${options.l15.enabled}`,
@@ -274,7 +341,13 @@ export class MemoryService {
   }
 
   async saveMemory(input: SaveMemoryInput): Promise<number> {
-    const { backend } = getState(this);
+    const { backend, store } = getState(this);
+    let stored = false;
+
+    if (store) {
+      stored = await store.upsertL1(await buildGenericStoreL1Record(store, input));
+    }
+
     const result = await backend.upsertMemoryAtom({
       userId: input.userId,
       text: input.text,
@@ -282,17 +355,70 @@ export class MemoryService {
       sourceConversationIds: input.sourceConversationIds,
       sourceLayer: input.sourceLayer,
     });
+
+    if (store && !stored) {
+      await store.upsertL1({
+        recordId: `legacy:l1:${result.atom.id}`,
+        userId: result.atom.userId,
+        sessionKey: `generic:${result.atom.userId}`,
+        sessionId: "generic",
+        content: result.atom.text,
+        type: result.atom.sourceLayer,
+        priority: result.atom.importance,
+        sceneName: "generic memory",
+        timestampStr: result.atom.updatedAt,
+        timestampStart: result.atom.createdAt,
+        timestampEnd: result.atom.updatedAt,
+        sourceConversationIds: result.atom.sourceConversationIds,
+        metadata: { source: "MemoryService.saveMemory" },
+        createdTime: result.atom.createdAt,
+        updatedTime: result.atom.updatedAt,
+      });
+    }
+
     return result.atom.id;
   }
 
   async logUserMessage(input: { chatId: string; userId: string; content: string; mode?: string }): Promise<number> {
-    const { interactionLogService } = getState(this);
-    return interactionLogService.logUserMessage(input);
+    const { interactionLogService, store } = getState(this);
+    const eventId = await interactionLogService.logUserMessage(input);
+    if (store) {
+      const recordedAt = new Date().toISOString();
+      await store.upsertL0({
+        recordId: `interaction:l0:${eventId}`,
+        sessionKey: sessionKey(input.chatId, input.userId),
+        sessionId: input.chatId,
+        chatId: input.chatId,
+        userId: input.userId,
+        role: "user",
+        messageText: input.content,
+        recordedAt,
+        timestamp: Date.parse(recordedAt) || eventId,
+        metadata: input.mode ? { mode: input.mode } : {},
+      });
+    }
+    return eventId;
   }
 
   async logAssistantMessage(input: { chatId: string; userId: string; content: string; meta?: EventMeta }): Promise<number> {
-    const { interactionLogService } = getState(this);
-    return interactionLogService.logAssistantMessage(input);
+    const { interactionLogService, store } = getState(this);
+    const eventId = await interactionLogService.logAssistantMessage(input);
+    if (store) {
+      const recordedAt = new Date().toISOString();
+      await store.upsertL0({
+        recordId: `interaction:l0:${eventId}`,
+        sessionKey: sessionKey(input.chatId, input.userId),
+        sessionId: input.chatId,
+        chatId: input.chatId,
+        userId: input.userId,
+        role: "assistant",
+        messageText: input.content,
+        recordedAt,
+        timestamp: Date.parse(recordedAt) || eventId,
+        metadata: input.meta,
+      });
+    }
+    return eventId;
   }
 
   async logToolCall(input: {
@@ -321,14 +447,33 @@ export class MemoryService {
   }
 
   async logTurn(input: LogTurnInput): Promise<number> {
-    const { backend } = getState(this);
-    return backend.insertConversationTurn({
+    const { backend, store } = getState(this);
+    const createdAt = new Date().toISOString();
+    const id = await backend.insertConversationTurn({
       chatId: input.chatId,
       userId: input.userId,
       role: input.role,
       content: input.content,
       meta: input.meta,
+      createdAt,
     });
+
+    if (store) {
+      await store.upsertL0({
+        recordId: `legacy:l0:${id}`,
+        sessionKey: sessionKey(input.chatId, input.userId),
+        sessionId: input.chatId,
+        chatId: input.chatId,
+        userId: input.userId,
+        role: input.role,
+        messageText: input.content,
+        recordedAt: createdAt,
+        timestamp: Date.parse(createdAt) || id,
+        metadata: input.meta,
+      });
+    }
+
+    return id;
   }
 
   async listInteractionEvents(userId: string, chatId: string, limit: number): Promise<InteractionEvent[]> {
