@@ -12,7 +12,10 @@
       "Skill(superpowers:subagent-driven-development)",
       "Skill(superpowers:using-git-worktrees)",
       "Bash(bun run *)",
-      "Bash(bun test *)"
+      "Bash(bun test *)",
+      "Bash(bun *)",
+      "Skill(superpowers:verification-before-completion)",
+      "Skill(superpowers:systematic-debugging)"
     ]
   }
 }
