@@ -8,6 +8,8 @@
 
 **Tech Stack:** Bun, TypeScript, grammY, `@grammyjs/conversations`, node-cron, SQLite, Bun test runner.
 
+**Current code baseline (2026-05-18):** The repository currently has `PipelineCoordinator.runMaintenanceForUser(userId, force)` with no progress options, `MemoryService.runMaintenanceForUser` forwards only those two arguments, `runOneMemoryUpdateNow` blocks until maintenance finishes, and `memory-update:run-now` is handled only inside the conversation. This plan intentionally starts from that baseline: `src/memory/pipeline/progress.ts`, `src/bot/conversations/memory-update-runner.ts`, and `tests/bot/memory-update-runner.test.ts` do not exist yet.
+
 ---
 
 ## File structure
@@ -40,7 +42,7 @@
 **Files:**
 - Create: `src/memory/pipeline/progress.ts`
 - Modify: `src/memory/pipeline/coordinator.ts:1-65`
-- Modify: `src/memory/core/service.ts:9,266-269`
+- Modify: `src/memory/core/service.ts:12,488-490`
 - Test: `tests/memory/pipeline.test.ts`
 
 - [ ] **Step 1: Write the failing pipeline progress tests**
@@ -581,6 +583,8 @@ export async function runOneMemoryUpdateNow(input: MemoryUpdateRunNowInput) {
 }
 ```
 
+No changes are needed in `src/cron/scheduler.ts` or `src/index.ts`; scheduled calls can keep using the current wrapper and receive `source: "scheduler"` from the default in `runOneMemoryUpdateNow`.
+
 - [ ] **Step 5: Run targeted runner tests**
 
 Run:
@@ -859,8 +863,8 @@ Expected: commit succeeds and records the background helper.
 ### Task 4: Wire Telegram conversation and stale callback fallback
 
 **Files:**
-- Modify: `src/bot/conversations/memory-update.ts:16-21,151-158`
-- Modify: `src/bot/bot.ts:14,158-162`
+- Modify: `src/bot/conversations/memory-update.ts:8,16-21,151-158`
+- Modify: `src/bot/bot.ts:14,162-165`
 - Test: `tests/bot/memory-update-runner.test.ts`
 
 - [ ] **Step 1: Add a direct fallback test for already-running messaging behavior**

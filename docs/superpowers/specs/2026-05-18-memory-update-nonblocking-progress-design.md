@@ -18,6 +18,16 @@ Implement a focused fix for Memory Update execution and logs:
 
 Do not change the memory model semantics. L0 conversations, L1 atoms, L2 scenarios, L3 persona, offload refs, and Mermaid canvas keep their existing meaning.
 
+## Current code baseline (2026-05-18)
+
+At the time this design is written, the repository still uses the blocking path:
+
+- `src/memory/pipeline/coordinator.ts` exposes `runMaintenanceForUser(userId, force = false)` and emits no progress events.
+- `src/memory/core/service.ts` forwards only `(userId, force)` to the pipeline coordinator.
+- `src/cron/autonomous.ts` `runOneMemoryUpdateNow` marks settings and awaits `memory.runMaintenanceForUser(userId, true)` without `[memory-update:*]` lifecycle logs.
+- `src/bot/conversations/memory-update.ts` awaits `runOneMemoryUpdateNow` inside `conversation.external` for `memory-update:run-now`.
+- `src/memory/pipeline/progress.ts`, `src/bot/conversations/memory-update-runner.ts`, and `tests/bot/memory-update-runner.test.ts` do not exist yet.
+
 ## Non-goals
 
 - Do not introduce a full durable job queue.
@@ -50,13 +60,14 @@ This interface should be internal and minimal. It exists to support logging and 
 
 Extend `PipelineCoordinator.runMaintenanceForUser(userId, force, options?)` so it can emit progress events around each stage:
 
-1. Emit L1 start before pending conversation evidence is processed.
-2. Emit L1 complete with created atom count and checkpoint information.
-3. If no further work is needed, emit L2/L3 skip where appropriate and return.
-4. Emit L2 start before building a scenario.
-5. Emit L2 complete with scenario id, or L2 skip if there are no atoms.
-6. Emit L3 start before persona distillation.
-7. Emit L3 complete with persona update result.
+1. Resolve the L1 checkpoint and pending conversation evidence.
+2. Emit L1 skip when there is no pending non-forced work, otherwise emit L1 start with the pending turn count before running the L1 extractor.
+3. Emit L1 complete with created atom count and checkpoint information.
+4. If no further work is needed, emit L2/L3 skip where appropriate and return.
+5. Emit L2 start before building a scenario.
+6. Emit L2 complete with scenario id, or L2 skip if there are no atoms.
+7. Emit L3 start before persona distillation.
+8. Emit L3 complete with persona update result.
 
 The pipeline should still return the existing `PipelineMaintenanceResult` shape.
 
@@ -71,7 +82,7 @@ The runner should:
 
 1. Mark the user run as `running`.
 2. Log `run-start`.
-3. Call `memory.runMaintenanceForUser(userId, true, { onProgress })` or equivalent service-level API.
+3. Call `memory.runMaintenanceForUser(userId, true, { source, onProgress })` through the service-level API.
 4. Mark the user run as `success` and log `run-complete` on success.
 5. Mark the user run as `error`, log `run-error`, and rethrow on failure.
 
@@ -85,14 +96,14 @@ For the `memory-update:run-now` callback:
 4. Start the maintenance run in a background promise and return control to the conversation loop quickly.
 5. For each progress event, send a new Telegram message:
    - `L1 dimulai...`
-   - `L1 selesai: X atom dibuat`
+   - `L1 selesai: X atom dibuat.`
    - `L2 dimulai...`
-   - `L2 selesai: scenario #N`
-   - `L2 dilewati: tidak ada atom`
+   - `L2 selesai: scenario #N.`
+   - `L2 dilewati: tidak ada atom.`
    - `L3 dimulai...`
-   - `L3 selesai: persona updated`
-   - `L3 dilewati`
-6. On final success, send `Memory update selesai.` with the L1/L2/L3 summary.
+   - `L3 selesai: persona updated.`
+   - `L3 dilewati.`
+6. On final success, send `Memory update selesai. L1=...` with the L1/L2/L3 summary.
 7. On failure, send `Memory update gagal: <error>`.
 8. Always clear the active-run guard in `finally`.
 
@@ -102,7 +113,7 @@ The conversation screen can still refresh to show `Last status: running` shortly
 
 The scheduler should keep awaiting scheduled memory updates so `maxItemsPerTick` and `busy` behavior stay predictable.
 
-Scheduled runs should pass `source: "scheduler"` and use the same structured progress logging. They do not need Telegram progress messages.
+The existing `src/cron/scheduler.ts` dispatch contract can keep passing only `{ userId, nowUnix }`; `runOneMemoryUpdateNow()` should default `source` to `"scheduler"` and use the same structured progress logging. Scheduled runs do not need Telegram progress messages.
 
 ## Logging
 
