@@ -20,6 +20,22 @@ export const memoryUpdateCallbacks = {
   back: "memory-update:back",
 } as const;
 
+type MemoryUpdateCallbackData = (typeof memoryUpdateCallbacks)[keyof typeof memoryUpdateCallbacks];
+
+const memoryUpdateCallbackData = new Set<string>(Object.values(memoryUpdateCallbacks));
+
+function isMemoryUpdateCallbackData(data: string | undefined): data is MemoryUpdateCallbackData {
+  return data !== undefined && memoryUpdateCallbackData.has(data);
+}
+
+async function waitForMemoryUpdateCallback(conversation: BotConversation) {
+  const action = await conversation.waitFor("callback_query:data", { next: true });
+  if (!isMemoryUpdateCallbackData(action.callbackQuery.data)) {
+    await conversation.skip({ next: true });
+  }
+  return action;
+}
+
 function resolveUserId(ctx: Context) {
   return String(ctx.from?.id ?? ctx.chat?.id ?? "unknown");
 }
@@ -123,7 +139,7 @@ export function createMemoryUpdateConversation(deps: MemoryUpdateConversationDep
     await render(ctx);
 
     while (true) {
-      const action = await conversation.waitFor("callback_query:data");
+      const action = await waitForMemoryUpdateCallback(conversation);
       await action.answerCallbackQuery();
       const setting = await conversation.external(() => deps.settings.getOrCreate(userId));
       note = undefined;
@@ -157,13 +173,14 @@ export function createMemoryUpdateConversation(deps: MemoryUpdateConversationDep
           }
 
           const chatId = String(rawChatId);
-          const result = await conversation.external(async () => {
-            return startTelegramMemoryUpdateRun({
+          const result = await conversation.external(async (outsideCtx) => {
+            const run = await startTelegramMemoryUpdateRun({
               memory: deps.memory,
               settings: deps.settings,
               userId,
-              sendMessage: (text) => action.api.sendMessage(chatId, text),
+              sendMessage: (text) => outsideCtx.api.sendMessage(chatId, text),
             });
+            return { status: run.status };
           });
           note = result.status === "started"
             ? "Run now dimulai. Progress dikirim sebagai pesan baru."
