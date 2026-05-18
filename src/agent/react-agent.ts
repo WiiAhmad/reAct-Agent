@@ -126,7 +126,9 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
       .map((m) => ({ role: m.role, content: m.content }) as AgentMessage),
   ];
 
-  const tools = input.registry.list();
+  const tools = input.registry
+    .list()
+    .filter((tool) => input.mode !== "autonomous" || (tool.name !== "tdai_create_job" && tool.name !== "telegram_send_message"));
   let final = "";
 
   for (let i = 0; i < config.agent.maxToolIterations; i++) {

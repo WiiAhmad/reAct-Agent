@@ -240,6 +240,65 @@ test("agent runtime passes tool call id into semantic L1 offload", async () => {
   }
 });
 
+test("agent runtime hides scheduling and direct Telegram tools during autonomous runs", async () => {
+  let seenTools: string[] = [];
+  const llm = {
+    async complete({ tools }: { tools: Array<{ name: string }> }) {
+      seenTools = tools.map((tool) => tool.name);
+      return { content: "Reminder delivered.", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: false,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+      },
+    });
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await runReactAgent({
+      chatId: "c1",
+      userId: "u1",
+      input: "[AUTONOMOUS_JOB #1] Kirim pengingat singkat untuk minum air.",
+      memory,
+      registry,
+      llm: llm as any,
+      mode: "autonomous",
+    });
+
+    expect(seenTools).toContain("tdai_current_datetime");
+    expect(seenTools).not.toContain("tdai_create_job");
+    expect(seenTools).not.toContain("telegram_send_message");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("agent runtime includes relevant historical task canvases in memory context", async () => {
   let seenMessages: Array<{ role: string; content?: string }> = [];
   const llm = {

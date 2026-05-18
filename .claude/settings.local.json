@@ -15,7 +15,12 @@
       "Bash(bun test *)",
       "Bash(bun *)",
       "Skill(superpowers:verification-before-completion)",
-      "Skill(superpowers:systematic-debugging)"
+      "Skill(superpowers:systematic-debugging)",
+      "Skill(superpowers:executing-plans)",
+      "PowerShell($gitDir = \\(git rev-parse --git-dir\\); $gitCommon = \\(git rev-parse --git-common-dir\\); $branch = \\(git branch --show-current\\); $super = \\(git rev-parse --show-superproject-working-tree\\); \"GIT_DIR=$gitDir\"; \"GIT_COMMON=$gitCommon\"; \"BRANCH=$branch\"; \"SUPERPROJECT=$super\")",
+      "Skill(superpowers:requesting-code-review)",
+      "PowerShell(bun test *)",
+      "Skill(superpowers:test-driven-development)"
     ]
   }
 }
