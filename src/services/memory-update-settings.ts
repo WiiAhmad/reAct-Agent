@@ -46,7 +46,7 @@ function mapRow(row: MemoryUpdateSettingsDbRow): MemoryUpdateSettingsRow {
   return {
     userId: row.user_id,
     enabled: row.enabled === 1,
-    scheduleMode: schedule.scheduleMode,
+    scheduleMode: row.schedule_mode,
     intervalSec: schedule.intervalSec,
     cronExpr: schedule.cronExpr,
     lastRunAt: row.last_run_at,
@@ -91,6 +91,10 @@ export class MemoryUpdateSettingsService {
   }
 
   updateSchedule(userId: string, scheduleInput: ScheduleInput): MemoryUpdateSettingsRow {
+    if (scheduleInput.scheduleMode === "once") {
+      throw new Error("Memory update schedules only support interval and cron modes");
+    }
+
     const schedule = normalizeSchedule(scheduleInput);
     const existing = this.getOrCreate(userId);
     this.db

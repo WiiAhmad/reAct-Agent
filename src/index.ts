@@ -50,7 +50,7 @@ async function main() {
 
   const bot = createTelegramBot({ memory, registry, llm, autonomousJobs, memoryUpdateSettings });
 
-  registry.registerMany(createLocalTools(memory, bot.api));
+  registry.registerMany(createLocalTools(memory, bot.api, autonomousJobs));
 
   startSchedulerLoop({
     tickCron: config.scheduler.tickCron,

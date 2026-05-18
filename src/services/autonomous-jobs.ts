@@ -1,14 +1,22 @@
 import type { Database } from "bun:sqlite";
-import { describeSchedule, getNextDueAtUnix, isScheduleDue, normalizeSchedule, type ScheduleInput } from "./schedules";
+import { describeSchedule, isScheduleDue, normalizeSchedule, type ScheduleInput, type ScheduleMode } from "./schedules";
 import { nowIso } from "../utils/time";
+
+export type AutonomousJobType = "agent" | "hybrid";
 
 export type AutonomousJobRow = {
   id: number;
   chatId: string;
   userId: string;
   prompt: string;
+  jobType: AutonomousJobType;
+  messageText: string;
+  agentPrompt: string;
+  runAtUnix: number | null;
+  runCount: number;
+  maxRuns: number | null;
   enabled: boolean;
-  scheduleMode: "interval" | "cron";
+  scheduleMode: ScheduleMode;
   intervalSec: number | null;
   cronExpr: string | null;
   lastRunAt: number | null;
@@ -25,8 +33,14 @@ type AutonomousJobDbRow = {
   chat_id: string;
   user_id: string;
   prompt: string;
+  job_type: AutonomousJobType;
+  message_text: string;
+  agent_prompt: string;
+  run_at_unix: number | null;
+  run_count: number;
+  max_runs: number | null;
   enabled: number;
-  schedule_mode: "interval" | "cron";
+  schedule_mode: ScheduleMode;
   interval_sec: number | null;
   cron_expr: string | null;
   last_run_at: number | null;
@@ -37,13 +51,47 @@ type AutonomousJobDbRow = {
   updated_at: string;
 };
 
+export type CreateAutonomousJobInput = {
+  chatId: string;
+  userId: string;
+  prompt: string;
+  jobType?: AutonomousJobType;
+  messageText?: string;
+  agentPrompt?: string;
+  schedule: ScheduleInput;
+  maxRuns?: number | null;
+};
+
+const AUTONOMOUS_JOB_COLUMNS = `
+          id,
+          chat_id,
+          user_id,
+          prompt,
+          job_type,
+          message_text,
+          agent_prompt,
+          run_at_unix,
+          run_count,
+          max_runs,
+          enabled,
+          schedule_mode,
+          interval_sec,
+          cron_expr,
+          last_run_at,
+          last_finished_at,
+          last_status,
+          last_error,
+          created_at,
+          updated_at`;
+
 function toUnixAnchor(createdAt: string, lastFinishedAt: number | null): number {
   return lastFinishedAt ?? Math.floor(new Date(createdAt).getTime() / 1000);
 }
 
-function toSchedule(row: Pick<AutonomousJobDbRow, "schedule_mode" | "interval_sec" | "cron_expr" | "last_finished_at">) {
+function toSchedule(row: Pick<AutonomousJobDbRow, "schedule_mode" | "run_at_unix" | "interval_sec" | "cron_expr" | "last_finished_at">) {
   return normalizeSchedule({
     scheduleMode: row.schedule_mode,
+    runAtUnix: row.run_at_unix,
     intervalSec: row.interval_sec,
     cronExpr: row.cron_expr,
     lastFinishedAt: row.last_finished_at,
@@ -57,6 +105,12 @@ function mapRow(row: AutonomousJobDbRow): AutonomousJobRow {
     chatId: row.chat_id,
     userId: row.user_id,
     prompt: row.prompt,
+    jobType: row.job_type,
+    messageText: row.message_text,
+    agentPrompt: row.agent_prompt,
+    runAtUnix: schedule.runAtUnix,
+    runCount: row.run_count,
+    maxRuns: row.max_runs,
     enabled: row.enabled === 1,
     scheduleMode: schedule.scheduleMode,
     intervalSec: schedule.intervalSec,
@@ -74,8 +128,9 @@ function mapRow(row: AutonomousJobDbRow): AutonomousJobRow {
 export class AutonomousJobService {
   constructor(private readonly db: Database) {}
 
-  createJob(input: { chatId: string; userId: string; prompt: string; schedule: ScheduleInput }): AutonomousJobRow {
+  createJob(input: CreateAutonomousJobInput): AutonomousJobRow {
     const schedule = normalizeSchedule(input.schedule);
+    const maxRuns = input.maxRuns ?? (schedule.scheduleMode === "once" ? 1 : null);
     const now = nowIso();
     const result = this.db
       .query(
@@ -83,6 +138,12 @@ export class AutonomousJobService {
           chat_id,
           user_id,
           prompt,
+          job_type,
+          message_text,
+          agent_prompt,
+          run_at_unix,
+          run_count,
+          max_runs,
           schedule_mode,
           interval_sec,
           cron_expr,
@@ -93,9 +154,23 @@ export class AutonomousJobService {
           last_error,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, ?, ?)`,
       )
-      .run(input.chatId, input.userId, input.prompt, schedule.scheduleMode, schedule.intervalSec, schedule.cronExpr, now, now);
+      .run(
+        input.chatId,
+        input.userId,
+        input.prompt,
+        input.jobType ?? "agent",
+        input.messageText ?? "",
+        input.agentPrompt ?? "",
+        schedule.runAtUnix,
+        maxRuns,
+        schedule.scheduleMode,
+        schedule.intervalSec,
+        schedule.cronExpr,
+        now,
+        now,
+      );
 
     const job = this.getJobById(Number(result.lastInsertRowid));
     if (!job) throw new Error("Failed to load created autonomous job");
@@ -105,21 +180,7 @@ export class AutonomousJobService {
   getJobById(id: number): AutonomousJobRow | null {
     const row = this.db
       .query(
-        `SELECT
-          id,
-          chat_id,
-          user_id,
-          prompt,
-          enabled,
-          schedule_mode,
-          interval_sec,
-          cron_expr,
-          last_run_at,
-          last_finished_at,
-          last_status,
-          last_error,
-          created_at,
-          updated_at
+        `SELECT${AUTONOMOUS_JOB_COLUMNS}
          FROM autonomous_jobs
          WHERE id = ?`,
       )
@@ -131,21 +192,7 @@ export class AutonomousJobService {
   getJobByChat(chatId: string, id: number): AutonomousJobRow | null {
     const row = this.db
       .query(
-        `SELECT
-          id,
-          chat_id,
-          user_id,
-          prompt,
-          enabled,
-          schedule_mode,
-          interval_sec,
-          cron_expr,
-          last_run_at,
-          last_finished_at,
-          last_status,
-          last_error,
-          created_at,
-          updated_at
+        `SELECT${AUTONOMOUS_JOB_COLUMNS}
          FROM autonomous_jobs
          WHERE chat_id = ? AND id = ?`,
       )
@@ -157,21 +204,7 @@ export class AutonomousJobService {
   listJobsForChat(chatId: string): AutonomousJobRow[] {
     const rows = this.db
       .query(
-        `SELECT
-          id,
-          chat_id,
-          user_id,
-          prompt,
-          enabled,
-          schedule_mode,
-          interval_sec,
-          cron_expr,
-          last_run_at,
-          last_finished_at,
-          last_status,
-          last_error,
-          created_at,
-          updated_at
+        `SELECT${AUTONOMOUS_JOB_COLUMNS}
          FROM autonomous_jobs
          WHERE chat_id = ?
          ORDER BY id DESC`,
@@ -182,7 +215,9 @@ export class AutonomousJobService {
   }
 
   updatePrompt(id: number, prompt: string): AutonomousJobRow {
-    this.db.query(`UPDATE autonomous_jobs SET prompt = ?, updated_at = ? WHERE id = ?`).run(prompt, nowIso(), id);
+    this.db
+      .query(`UPDATE autonomous_jobs SET prompt = ?, agent_prompt = CASE WHEN job_type = 'hybrid' THEN ? ELSE agent_prompt END, updated_at = ? WHERE id = ?`)
+      .run(prompt, prompt, nowIso(), id);
     const job = this.getJobById(id);
     if (!job) throw new Error(`Autonomous job not found: ${id}`);
     return job;
@@ -190,9 +225,15 @@ export class AutonomousJobService {
 
   updateSchedule(id: number, scheduleInput: ScheduleInput): AutonomousJobRow {
     const schedule = normalizeSchedule(scheduleInput);
-    this.db
-      .query(`UPDATE autonomous_jobs SET schedule_mode = ?, interval_sec = ?, cron_expr = ?, updated_at = ? WHERE id = ?`)
-      .run(schedule.scheduleMode, schedule.intervalSec, schedule.cronExpr, nowIso(), id);
+    if (schedule.scheduleMode === "once") {
+      this.db
+        .query(`UPDATE autonomous_jobs SET schedule_mode = ?, run_at_unix = ?, interval_sec = ?, cron_expr = ?, max_runs = COALESCE(max_runs, 1), updated_at = ? WHERE id = ?`)
+        .run(schedule.scheduleMode, schedule.runAtUnix, schedule.intervalSec, schedule.cronExpr, nowIso(), id);
+    } else {
+      this.db
+        .query(`UPDATE autonomous_jobs SET schedule_mode = ?, run_at_unix = ?, interval_sec = ?, cron_expr = ?, updated_at = ? WHERE id = ?`)
+        .run(schedule.scheduleMode, schedule.runAtUnix, schedule.intervalSec, schedule.cronExpr, nowIso(), id);
+    }
     const job = this.getJobById(id);
     if (!job) throw new Error(`Autonomous job not found: ${id}`);
     return job;
@@ -210,26 +251,28 @@ export class AutonomousJobService {
     return result.changes > 0;
   }
 
+  recordSuccessfulRun(id: number): { deleted: boolean; job: AutonomousJobRow | null; runCount: number } {
+    const job = this.getJobById(id);
+    if (!job) throw new Error(`Autonomous job not found: ${id}`);
+
+    const nextRunCount = job.runCount + 1;
+    if (job.maxRuns !== null && nextRunCount >= job.maxRuns) {
+      this.deleteJob(id);
+      return { deleted: true, job: null, runCount: nextRunCount };
+    }
+
+    this.db.query(`UPDATE autonomous_jobs SET run_count = ?, updated_at = ? WHERE id = ?`).run(nextRunCount, nowIso(), id);
+    const updatedJob = this.getJobById(id);
+    if (!updatedJob) throw new Error(`Autonomous job not found: ${id}`);
+    return { deleted: false, job: updatedJob, runCount: nextRunCount };
+  }
+
   listDueJobs(nowUnix: number, limit: number): AutonomousJobRow[] {
     if (limit <= 0) return [];
 
     const rows = this.db
       .query(
-        `SELECT
-          id,
-          chat_id,
-          user_id,
-          prompt,
-          enabled,
-          schedule_mode,
-          interval_sec,
-          cron_expr,
-          last_run_at,
-          last_finished_at,
-          last_status,
-          last_error,
-          created_at,
-          updated_at
+        `SELECT${AUTONOMOUS_JOB_COLUMNS}
          FROM autonomous_jobs
          WHERE enabled = 1
          ORDER BY id ASC`,
@@ -239,8 +282,12 @@ export class AutonomousJobService {
     const dueJobs: AutonomousJobRow[] = [];
     for (const row of rows) {
       const job = mapRow(row);
+      if (job.maxRuns !== null && job.runCount >= job.maxRuns) {
+        continue;
+      }
       const schedule = normalizeSchedule({
         scheduleMode: job.scheduleMode,
+        runAtUnix: job.runAtUnix,
         intervalSec: job.intervalSec,
         cronExpr: job.cronExpr,
         lastFinishedAt: job.lastFinishedAt,

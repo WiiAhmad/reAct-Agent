@@ -28,6 +28,16 @@ test("memory update settings accept custom cron schedules", () => {
   expect(service.getOrCreate("user-1").cronExpr).toBe("0 9 * * *");
 });
 
+test("memory update settings reject one-shot schedules", () => {
+  const { service } = makeService();
+  const existing = service.getOrCreate("user-1");
+
+  expect(() => service.updateSchedule("user-1", { scheduleMode: "once", runAtUnix: 1_779_085_800 } as any)).toThrow(
+    "Memory update schedules only support interval and cron modes",
+  );
+  expect(service.getOrCreate("user-1").scheduleMode).toBe(existing.scheduleMode);
+});
+
 test("lists due memory update settings using the first completed run anchor", () => {
   const { db, service } = makeService();
 

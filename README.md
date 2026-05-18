@@ -67,11 +67,13 @@ A job has its own schedule, and the unified scheduler dispatches due jobs from t
 
 Jobs support preset intervals and custom cron expressions. The bot surfaces job creation, editing, enable/disable, and deletion through menu flows instead of slash commands.
 
+The agent can also create hybrid scheduled jobs through `tdai_create_job`. These jobs send fixed text first, then run an agent prompt. If no repeat count is specified, `max_runs` defaults to 1.
+
 ## Agent prompt and tools
 
 The agent system prompt is extracted into `src/agent/prompts/system.ts` so the prompt stays separate from orchestration code.
 
-The agent also has an internal current datetime tool, `tdai_current_datetime`, for situations where an accurate timestamp matters. It returns values using the configured timezone/locale and includes weekday fields so the agent does not infer the day name.
+The agent also has internal local tools for accurate time and scheduling: `tdai_current_datetime` for timestamp-aware reasoning, and `tdai_create_job` for reminder or scheduled-task creation. `tdai_current_datetime` returns values using the configured timezone/locale and includes weekday fields so the agent does not infer the day name.
 
 Other local tools still include memory search, conversation search, memory status, offloaded context ref reading, durable memory saving, and Telegram message sending for autonomous runs.
 

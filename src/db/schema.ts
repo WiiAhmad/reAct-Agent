@@ -44,6 +44,12 @@ export function migrate(db: Database) {
       chat_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       prompt TEXT NOT NULL,
+      job_type TEXT NOT NULL DEFAULT 'agent',
+      message_text TEXT NOT NULL DEFAULT '',
+      agent_prompt TEXT NOT NULL DEFAULT '',
+      run_at_unix INTEGER,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      max_runs INTEGER,
       schedule_mode TEXT NOT NULL DEFAULT 'interval',
       interval_sec INTEGER,
       cron_expr TEXT,
@@ -183,5 +189,23 @@ export function migrate(db: Database) {
   }
   if (!hasColumn(db, "autonomous_jobs", "last_error")) {
     db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN last_error TEXT`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "job_type")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN job_type TEXT NOT NULL DEFAULT 'agent'`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "message_text")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN message_text TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "agent_prompt")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN agent_prompt TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "run_at_unix")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN run_at_unix INTEGER`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "run_count")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "max_runs")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN max_runs INTEGER`);
   }
 }

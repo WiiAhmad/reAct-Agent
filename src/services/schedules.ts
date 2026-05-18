@@ -1,10 +1,11 @@
 import { CronExpressionParser } from "cron-parser";
 import { unixNow } from "../utils/time";
 
-export type ScheduleMode = "interval" | "cron";
+export type ScheduleMode = "once" | "interval" | "cron";
 
 export type ScheduleInput = {
   scheduleMode: ScheduleMode;
+  runAtUnix?: number | null;
   intervalSec?: number | null;
   cronExpr?: string | null;
   lastFinishedAt?: number | null;
@@ -12,6 +13,7 @@ export type ScheduleInput = {
 
 export type Schedule = {
   scheduleMode: ScheduleMode;
+  runAtUnix: number | null;
   intervalSec: number | null;
   cronExpr: string | null;
   lastFinishedAt: number | null;
@@ -61,9 +63,20 @@ export function validateCronExpression(cronExpr: string): string {
 }
 
 export function normalizeSchedule(input: ScheduleInput): Schedule {
+  if (input.scheduleMode === "once") {
+    return {
+      scheduleMode: "once",
+      runAtUnix: assertPositiveInteger(input.runAtUnix ?? null, "runAtUnix"),
+      intervalSec: null,
+      cronExpr: null,
+      lastFinishedAt: input.lastFinishedAt ?? null,
+    };
+  }
+
   if (input.scheduleMode === "interval") {
     return {
       scheduleMode: "interval",
+      runAtUnix: null,
       intervalSec: assertPositiveInteger(input.intervalSec ?? null, "intervalSec"),
       cronExpr: null,
       lastFinishedAt: input.lastFinishedAt ?? null,
@@ -73,6 +86,7 @@ export function normalizeSchedule(input: ScheduleInput): Schedule {
   if (input.scheduleMode === "cron") {
     return {
       scheduleMode: "cron",
+      runAtUnix: null,
       intervalSec: null,
       cronExpr: validateCronExpression(input.cronExpr ?? ""),
       lastFinishedAt: input.lastFinishedAt ?? null,
@@ -84,6 +98,10 @@ export function normalizeSchedule(input: ScheduleInput): Schedule {
 
 export function getNextDueAtUnix(schedule: Schedule, anchorUnix: ScheduleAnchor = schedule.lastFinishedAt): number {
   const nowUnix = anchorUnix ?? unixNow();
+
+  if (schedule.scheduleMode === "once") {
+    return schedule.runAtUnix!;
+  }
 
   if (schedule.scheduleMode === "interval") {
     return anchorUnix == null ? nowUnix : anchorUnix + schedule.intervalSec!;
@@ -101,6 +119,10 @@ export function isScheduleDue(schedule: Schedule, anchorUnix: ScheduleAnchor = s
 }
 
 export function describeSchedule(schedule: Schedule): string {
+  if (schedule.scheduleMode === "once") {
+    return `Once at ${new Date(schedule.runAtUnix! * 1000).toISOString()}`;
+  }
+
   if (schedule.scheduleMode === "interval") {
     return `Every ${describeInterval(schedule.intervalSec!)}`;
   }

@@ -15,6 +15,12 @@ Jobs support:
 
 The schedule is stored with the job, so each job can be due independently of the others.
 
+## Chat-created hybrid jobs
+
+The agent can create hybrid scheduled jobs through tdai_create_job.
+
+Hybrid jobs send fixed text first, then run an agent prompt. They can be one-shot, interval-based, or cron-based. If the user does not specify a repeat count, max_runs defaults to 1, so the job runs once and is deleted after a successful run.
+
 ## Lifecycle
 
 From Telegram, a user can:

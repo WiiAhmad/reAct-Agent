@@ -57,8 +57,11 @@ test("docs describe the current Telegram runtime model", () => {
   expect(memory).toContain("Memory Update is the Telegram-managed workflow for durable memory maintenance.");
   expect(memory).toContain("It is not a public slash command.");
   expect(memory).toContain("Memory Update scheduling is stored per user.");
+  expect(memory).toContain("tdai_create_job");
 
   expect(autonomousJobs).toContain("Autonomous jobs are Telegram-managed scheduled tasks that run through the unified scheduler.");
+  expect(autonomousJobs).toContain("The agent can create hybrid scheduled jobs through tdai_create_job.");
+  expect(autonomousJobs).toContain("Hybrid jobs send fixed text first, then run an agent prompt.");
   expect(autonomousJobs).toContain("The unified scheduler wakes on an internal tick");
   expect(autonomousJobs).toContain("Job management is exposed through menu flows, not through public slash commands.");
   expect(autonomousJobs).toContain("The old `/job <prompt>` and `/jobs` command surface is no longer the primary interface.");

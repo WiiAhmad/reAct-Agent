@@ -1,6 +1,8 @@
 import type { Api } from "grammy";
 import { config } from "../config";
 import type { MemoryServiceLike as MemoryService } from "../memory/core/service";
+import type { AutonomousJobService } from "../services/autonomous-jobs";
+import { validateCronExpression } from "../services/schedules";
 import { currentDateTimeSnapshot } from "../utils/time";
 import { truncateText } from "../utils/text";
 import type { RegisteredTool, ToolContext } from "./types";
@@ -11,6 +13,26 @@ function asString(value: unknown, fallback = ""): string {
 
 function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asPositiveInteger(value: unknown, fallback: number, fieldName: string): number | string {
+  const resolved = value === undefined || value === null ? fallback : value;
+  if (!Number.isInteger(resolved) || (resolved as number) <= 0) {
+    return `${fieldName} must be a positive integer.`;
+  }
+  return resolved as number;
+}
+
+function parseRunAtUnix(value: unknown): number | string {
+  const runAt = asString(value).trim();
+  if (!runAt) return "schedule.run_at is required for one-shot jobs.";
+  const timestamp = Date.parse(runAt);
+  if (!Number.isFinite(timestamp)) return "schedule.run_at must be a valid ISO datetime.";
+  return Math.floor(timestamp / 1000);
 }
 
 function scenarioBody(scenario: { body_markdown?: string; bodyMarkdown?: string }): string {
@@ -25,7 +47,7 @@ function getMemory(memory: MemoryService, ctx: ToolContext): MemoryService {
   return ctx.memory ?? memory;
 }
 
-export function createLocalTools(memory: MemoryService, telegram?: Api): RegisteredTool[] {
+export function createLocalTools(memory: MemoryService, telegram?: Api, autonomousJobs?: AutonomousJobService): RegisteredTool[] {
   return [
     {
       name: "tdai_memory_search",
@@ -138,6 +160,82 @@ export function createLocalTools(memory: MemoryService, telegram?: Api): Registe
       },
       async execute() {
         return JSON.stringify(currentDateTimeSnapshot(new Date(), { timezone: config.app.timezone, locale: config.app.locale }));
+      },
+    },
+    {
+      name: "tdai_create_job",
+      source: "local",
+      description: "Create a hybrid scheduled Telegram job that sends fixed text first, then runs an agent prompt. Supports one-shot, interval, and cron schedules. Defaults max_runs to 1.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          message_text: { type: "string", description: "Fixed Telegram text sent first when the job is due." },
+          agent_prompt: { type: "string", description: "Prompt run by the agent after message_text is sent." },
+          schedule: {
+            type: "object",
+            properties: {
+              mode: { type: "string", enum: ["once", "interval", "cron"] },
+              run_at: { type: "string", description: "ISO datetime for one-shot jobs." },
+              interval_sec: { type: "number", description: "Positive interval in seconds for interval jobs." },
+              cron_expr: { type: "string", description: "Cron expression for cron jobs." },
+            },
+            required: ["mode"],
+            additionalProperties: false,
+          },
+          max_runs: { type: "number", description: "Positive maximum execution count. Defaults to 1." },
+        },
+        required: ["message_text", "agent_prompt", "schedule"],
+        additionalProperties: false,
+      },
+      async execute(args, ctx) {
+        const jobs = ctx.autonomousJobs ?? autonomousJobs;
+        if (!jobs) return "Job service unavailable.";
+
+        const messageText = asString(args.message_text).trim();
+        if (!messageText) return "message_text is required.";
+
+        const agentPrompt = asString(args.agent_prompt).trim();
+        if (!agentPrompt) return "agent_prompt is required.";
+
+        const maxRuns = asPositiveInteger(args.max_runs, 1, "max_runs");
+        if (typeof maxRuns === "string") return maxRuns;
+
+        const scheduleInput = asObject(args.schedule);
+        const mode = asString(scheduleInput.mode).trim();
+        let schedule;
+
+        if (mode === "once") {
+          const runAtUnix = parseRunAtUnix(scheduleInput.run_at);
+          if (typeof runAtUnix === "string") return runAtUnix;
+          schedule = { scheduleMode: "once" as const, runAtUnix };
+        } else if (mode === "interval") {
+          const intervalSec = asPositiveInteger(scheduleInput.interval_sec, 0, "schedule.interval_sec");
+          if (typeof intervalSec === "string") return intervalSec;
+          schedule = { scheduleMode: "interval" as const, intervalSec };
+        } else if (mode === "cron") {
+          const cronExpr = asString(scheduleInput.cron_expr).trim();
+          if (!cronExpr) return "schedule.cron_expr is required for cron jobs.";
+          try {
+            schedule = { scheduleMode: "cron" as const, cronExpr: validateCronExpression(cronExpr) };
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
+        } else {
+          return "schedule.mode must be one of: once, interval, cron.";
+        }
+
+        const job = jobs.createJob({
+          chatId: ctx.chatId,
+          userId: ctx.userId,
+          prompt: agentPrompt,
+          jobType: "hybrid",
+          messageText,
+          agentPrompt,
+          schedule,
+          maxRuns,
+        });
+
+        return `Created job #${job.id}. Schedule: ${job.scheduleLabel}. max_runs=${maxRuns}.`;
       },
     },
     {

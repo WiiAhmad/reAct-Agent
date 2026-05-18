@@ -21,9 +21,31 @@ function createMemoryServiceDouble() {
   };
 }
 
+function createAutonomousJobsDouble() {
+  return {
+    createJob: mock((input: any) => ({
+      id: 9,
+      chatId: input.chatId,
+      userId: input.userId,
+      prompt: input.prompt,
+      jobType: input.jobType,
+      messageText: input.messageText,
+      agentPrompt: input.agentPrompt,
+      scheduleMode: input.schedule.scheduleMode,
+      runAtUnix: input.schedule.runAtUnix ?? null,
+      intervalSec: input.schedule.intervalSec ?? null,
+      cronExpr: input.schedule.cronExpr ?? null,
+      runCount: 0,
+      maxRuns: input.maxRuns ?? null,
+      scheduleLabel: input.schedule.scheduleMode === "once" ? "Once at 2026-05-18T06:30:00.000Z" : "Every 10 minutes",
+    })),
+  };
+}
+
 test("tool surface stays stable while calling MemoryService", async () => {
   const memory = createMemoryServiceDouble();
-  const tools = createLocalTools(memory as any);
+  const autonomousJobs = createAutonomousJobsDouble();
+  const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
 
   expect(tools.map((tool) => tool.name)).toEqual([
     "tdai_memory_search",
@@ -32,6 +54,7 @@ test("tool surface stays stable while calling MemoryService", async () => {
     "tdai_memory_status",
     "save_memory",
     "tdai_current_datetime",
+    "tdai_create_job",
     "telegram_send_message",
   ]);
 
@@ -103,6 +126,141 @@ test("memory search tool renders relevant historical task canvases", async () =>
   expect(output).toContain("## Relevant Task Canvases");
   expect(output).toContain("token-refresh-investigation");
   expect(output).toContain("Token refresh branch fixed");
+});
+
+test("tdai_create_job creates one-shot hybrid jobs with default max_runs", async () => {
+  const memory = createMemoryServiceDouble();
+  const autonomousJobs = createAutonomousJobsDouble();
+  const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
+  const createJob = tools.find((tool) => tool.name === "tdai_create_job");
+
+  expect(createJob).toBeDefined();
+
+  const output = await createJob!.execute(
+    {
+      message_text: "Pengingat: minum air",
+      agent_prompt: "Kirim respons singkat bahwa ini pengingat minum air.",
+      schedule: { mode: "once", run_at: "2026-05-18T06:30:00.000Z" },
+    },
+    { chatId: "chat-1", userId: "user-1", memory: memory as any },
+  );
+
+  expect(output).toContain("Created job #9");
+  expect(output).toContain("max_runs=1");
+  expect(autonomousJobs.createJob).toHaveBeenCalledWith({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Kirim respons singkat bahwa ini pengingat minum air.",
+    jobType: "hybrid",
+    messageText: "Pengingat: minum air",
+    agentPrompt: "Kirim respons singkat bahwa ini pengingat minum air.",
+    schedule: {
+      scheduleMode: "once",
+      runAtUnix: 1779085800,
+    },
+    maxRuns: 1,
+  });
+});
+
+test("tdai_create_job creates interval jobs with caller supplied max_runs", async () => {
+  const memory = createMemoryServiceDouble();
+  const autonomousJobs = createAutonomousJobsDouble();
+  const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
+  const createJob = tools.find((tool) => tool.name === "tdai_create_job");
+
+  await createJob!.execute(
+    {
+      message_text: "Pengingat: cek deploy",
+      agent_prompt: "Berikan follow-up cek deploy.",
+      schedule: { mode: "interval", interval_sec: 600 },
+      max_runs: 3,
+    },
+    { chatId: "chat-1", userId: "user-1", memory: memory as any },
+  );
+
+  expect(autonomousJobs.createJob).toHaveBeenCalledWith({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Berikan follow-up cek deploy.",
+    jobType: "hybrid",
+    messageText: "Pengingat: cek deploy",
+    agentPrompt: "Berikan follow-up cek deploy.",
+    schedule: {
+      scheduleMode: "interval",
+      intervalSec: 600,
+    },
+    maxRuns: 3,
+  });
+});
+
+test("tdai_create_job creates cron jobs", async () => {
+  const memory = createMemoryServiceDouble();
+  const autonomousJobs = createAutonomousJobsDouble();
+  const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
+  const createJob = tools.find((tool) => tool.name === "tdai_create_job");
+
+  await createJob!.execute(
+    {
+      message_text: "Pengingat: cek deploy",
+      agent_prompt: "Berikan follow-up cek deploy.",
+      schedule: { mode: "cron", cron_expr: "*/10 * * * *" },
+    },
+    { chatId: "chat-1", userId: "user-1", memory: memory as any },
+  );
+
+  expect(autonomousJobs.createJob).toHaveBeenCalledWith({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Berikan follow-up cek deploy.",
+    jobType: "hybrid",
+    messageText: "Pengingat: cek deploy",
+    agentPrompt: "Berikan follow-up cek deploy.",
+    schedule: {
+      scheduleMode: "cron",
+      cronExpr: "*/10 * * * *",
+    },
+    maxRuns: 1,
+  });
+});
+
+test("tdai_create_job returns validation errors for invalid cron expressions", async () => {
+  const memory = createMemoryServiceDouble();
+  const autonomousJobs = createAutonomousJobsDouble();
+  const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
+  const createJob = tools.find((tool) => tool.name === "tdai_create_job");
+
+  await expect(
+    createJob!.execute(
+      {
+        message_text: "Pengingat: cek deploy",
+        agent_prompt: "Berikan follow-up cek deploy.",
+        schedule: { mode: "cron", cron_expr: "not cron" },
+      },
+      { chatId: "chat-1", userId: "user-1", memory: memory as any },
+    ),
+  ).resolves.toBe("Invalid cron expression: not cron");
+
+  expect(autonomousJobs.createJob).not.toHaveBeenCalled();
+});
+
+test("tdai_create_job returns validation errors for incomplete input", async () => {
+  const memory = createMemoryServiceDouble();
+  const autonomousJobs = createAutonomousJobsDouble();
+  const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
+  const createJob = tools.find((tool) => tool.name === "tdai_create_job");
+
+  await expect(
+    createJob!.execute(
+      {
+        message_text: "",
+        agent_prompt: "Prompt",
+        schedule: { mode: "interval", interval_sec: 600 },
+      },
+      { chatId: "chat-1", userId: "user-1", memory: memory as any },
+    ),
+  ).resolves.toBe("message_text is required.");
+
+  expect(autonomousJobs.createJob).not.toHaveBeenCalled();
 });
 
 test("currentDateTimeSnapshot formats deterministic snapshots with timezone and locale", () => {

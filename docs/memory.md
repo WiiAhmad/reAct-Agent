@@ -66,6 +66,8 @@ The task-scoped Mermaid canvas provides a compact navigational summary of the ac
 
 short one-shot tool use like current date/time does not update task canvases. These short interactions can answer directly without creating or changing a long-running task canvas.
 
+Scheduled-task creation through tdai_create_job is also short one-shot tool use unless a longer task context exists.
+
 ## L4 draft skills
 
 L4 draft skill generation is menu/user-triggered from Skill Drafts. It uses a selected task canvas and linked evidence to write draft skills under project storage.
