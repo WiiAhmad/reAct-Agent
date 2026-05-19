@@ -7,6 +7,8 @@ import type { MemoryService } from "../memory/core/service";
 import { AutonomousJobService, type AutonomousJobRow } from "../services/autonomous-jobs";
 import { MemoryUpdateSettingsService } from "../services/memory-update-settings";
 import type { ToolRegistry } from "../tools/registry";
+import { emitTrace } from "../logging/helpers";
+import type { RuntimeTraceEmitter } from "../logging/types";
 import { splitTelegramMessage, truncateText } from "../utils/text";
 import { type BotContext } from "./context";
 import { buildHelpKeyboard, buildMainMenuKeyboard, buildMemorySummaryKeyboard, buildStartKeyboard, uiCallbacks } from "./ui/keyboards";
@@ -25,6 +27,7 @@ export type BotDeps = {
   llm: LlmProvider;
   autonomousJobs: AutonomousJobService;
   memoryUpdateSettings: MemoryUpdateSettingsService;
+  trace?: RuntimeTraceEmitter;
 };
 
 function logTelegramEvent(event: string, details: Record<string, unknown>) {
@@ -187,13 +190,31 @@ export function createTelegramBot(deps: BotDeps) {
     }
 
     await ctx.answerCallbackQuery();
+    emitTrace(deps.trace, {
+      minLevel: 1,
+      source: "bot",
+      event: "callback.memory_update.run_now",
+      chatId: target.chatId,
+      userId: target.userId,
+      payload: { status: "triggered" },
+    });
     const result = await startTelegramMemoryUpdateRun({
       memory: deps.memory,
       settings: deps.memoryUpdateSettings,
       userId: target.userId,
+      chatId: target.chatId,
       sendMessage: (text) => ctx.api.sendMessage(target.chatId, text),
+      trace: deps.trace,
     });
     if (result.status === "already-running") {
+      emitTrace(deps.trace, {
+        minLevel: 1,
+        source: "bot",
+        event: "callback.memory_update.run_now",
+        chatId: target.chatId,
+        userId: target.userId,
+        payload: { status: "already-running" },
+      });
       await ctx.reply("Memory update masih berjalan untuk user ini.");
     }
   });
@@ -256,6 +277,7 @@ export function createTelegramBot(deps: BotDeps) {
       registry: deps.registry,
       llm: deps.llm,
       mode: "chat",
+      trace: deps.trace,
     });
 
     logTelegramEvent("message:answered", {

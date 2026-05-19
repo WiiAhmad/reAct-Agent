@@ -141,7 +141,8 @@ test("pipeline emits progress events for L1, L2, and L3", async () => {
       exportDir: join(tempDir, "jsonl"),
       historyDir: join(tempDir, "history"),
     });
-    const pipeline = new PipelineCoordinator(backend, fakeLlm);
+    const traceEvents: Array<{ source: string; event: string; tags?: string[] }> = [];
+    const pipeline = new PipelineCoordinator(backend, fakeLlm, { emit: (event) => traceEvents.push(event) });
     const events: string[] = [];
 
     await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "Please use Bun for this bot.", meta: { mode: "chat" } });
@@ -161,6 +162,15 @@ test("pipeline emits progress events for L1, L2, and L3", async () => {
       "l3:start",
       "l3:complete",
     ]);
+    expect(traceEvents.map((event) => `${event.source}:${event.event}`)).toEqual([
+      "memory:pipeline.l1.start",
+      "memory:pipeline.l1.complete",
+      "memory:pipeline.l2.start",
+      "memory:pipeline.l2.complete",
+      "memory:pipeline.l3.start",
+      "memory:pipeline.l3.complete",
+    ]);
+    expect(traceEvents.every((event) => event.tags?.includes("new-memory-stack"))).toBe(true);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

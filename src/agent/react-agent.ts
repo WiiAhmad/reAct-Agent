@@ -3,6 +3,8 @@ import type { MemoryService } from "../memory/core/service";
 import type { EventMeta } from "../memory/core/types";
 import { truncateText } from "../utils/text";
 import type { ToolRegistry } from "../tools/registry";
+import { emitTrace, NEW_MEMORY_STACK_TAG } from "../logging/helpers";
+import type { RuntimeTraceEmitter } from "../logging/types";
 import type { AgentMessage, LlmProvider, ToolCall } from "./types";
 import { buildAgentSystemPrompt } from "./prompts/system";
 
@@ -14,6 +16,7 @@ export type RunAgentInput = {
   registry: ToolRegistry;
   llm: LlmProvider;
   mode?: "chat" | "autonomous";
+  trace?: RuntimeTraceEmitter;
 };
 
 function scenarioBody(scenario: { body_markdown?: string; bodyMarkdown?: string }): string {
@@ -57,7 +60,22 @@ function toolCallSummary(call: ToolCall): string {
   return `${call.name}(${truncateText(JSON.stringify(call.arguments ?? {}), 800)})`;
 }
 
-function logAgentEvent(event: string, details: Record<string, unknown>) {
+function logAgentEvent(trace: RuntimeTraceEmitter | undefined, event: string, details: Record<string, unknown>, minLevel: 1 | 2 | 3 = 2) {
+  if (trace) {
+    emitTrace(trace, {
+      minLevel,
+      source: "agent",
+      event,
+      tags: [NEW_MEMORY_STACK_TAG],
+      chatId: typeof details.chatId === "string" ? details.chatId : undefined,
+      userId: typeof details.userId === "string" ? details.userId : undefined,
+      toolName: typeof details.toolName === "string" ? details.toolName : undefined,
+      toolCallId: typeof details.toolCallId === "string" ? details.toolCallId : undefined,
+      payload: details,
+    });
+    return;
+  }
+
   console.log(`[agent:${event}]`, details);
 }
 
@@ -85,12 +103,12 @@ function shouldExposeSchedulingTools(input: string): boolean {
 }
 
 export async function runReactAgent(input: RunAgentInput): Promise<string> {
-  logAgentEvent("start", {
+  logAgentEvent(input.trace, "run.start", {
     mode: input.mode ?? "chat",
     chatId: input.chatId,
     userId: input.userId,
     input: truncateText(input.input, 200),
-  });
+  }, 1);
 
   const sourceConversationId = await input.memory.logUserMessage({
     chatId: input.chatId,
@@ -104,24 +122,26 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     latestUserMessage: input.input,
     sourceConversationId,
   });
-  logAgentEvent("l15", {
+  logAgentEvent(input.trace, "l15.complete", {
     mode: input.mode ?? "chat",
     chatId: input.chatId,
+    userId: input.userId,
     isLongTask: taskRouting.judgment.isLongTask,
     isContinuation: taskRouting.judgment.isContinuation,
     taskCompleted: taskRouting.judgment.taskCompleted,
     taskId: taskRouting.taskId,
     source: taskRouting.judgment.source,
-  });
+  }, 1);
 
   const [recent, recall] = await Promise.all([
     input.memory.recentMessages(input.userId, input.chatId, config.agent.maxRecentMessages),
     input.memory.recall(input.userId, input.input, config.memory.recallMaxResults, input.chatId),
   ]);
 
-  logAgentEvent("context", {
+  logAgentEvent(input.trace, "context.loaded", {
     mode: input.mode ?? "chat",
     chatId: input.chatId,
+    userId: input.userId,
     recentMessages: recent.length,
     recall: {
       atoms: recall.atoms.length,
@@ -131,7 +151,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
       hasCanvas: Boolean(recall.taskCanvas),
       taskCanvases: recall.taskCanvases.length,
     },
-  });
+  }, 1);
 
   const system = buildAgentSystemPrompt();
 
@@ -153,9 +173,10 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
   let final = "";
 
   for (let i = 0; i < config.agent.maxToolIterations; i++) {
-    logAgentEvent("iteration", {
+    logAgentEvent(input.trace, "iteration.start", {
       mode: input.mode ?? "chat",
       chatId: input.chatId,
+      userId: input.userId,
       iteration: i + 1,
       messageCount: messages.length,
       toolCount: tools.length,
@@ -164,9 +185,10 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     const response = await input.llm.complete({ messages, tools });
     final = response.content || final;
 
-    logAgentEvent("llm-response", {
+    logAgentEvent(input.trace, "response.received", {
       mode: input.mode ?? "chat",
       chatId: input.chatId,
+      userId: input.userId,
       iteration: i + 1,
       toolCalls: response.toolCalls.length,
       contentPreview: truncateText(response.content || "", 200),
@@ -180,24 +202,28 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
         content: answer,
         meta: { mode: input.mode ?? "chat", tool_iterations: i },
       });
-      logAgentEvent("complete", {
+      logAgentEvent(input.trace, "run.complete", {
         mode: input.mode ?? "chat",
         chatId: input.chatId,
+        userId: input.userId,
         iterations: i + 1,
         answerLength: answer.length,
         answerPreview: truncateText(answer, 200),
-      });
+      }, 1);
       return answer;
     }
 
     messages.push({ role: "assistant", content: response.content, toolCalls: response.toolCalls });
 
     for (const call of response.toolCalls) {
-      logAgentEvent("tool-call", {
+      logAgentEvent(input.trace, "tool.call", {
         mode: input.mode ?? "chat",
         chatId: input.chatId,
-        tool: call.name,
-        args: truncateText(JSON.stringify(call.arguments ?? {}), 200),
+        userId: input.userId,
+        toolName: call.name,
+        toolCallId: call.id,
+        args: call.arguments ?? {},
+        argsPreview: truncateText(JSON.stringify(call.arguments ?? {}), 200),
       });
 
       await input.memory.logToolCall({
@@ -249,10 +275,12 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
         },
       });
 
-      logAgentEvent("tool-result", {
+      logAgentEvent(input.trace, "tool.result", {
         mode: input.mode ?? "chat",
         chatId: input.chatId,
-        tool: call.name,
+        userId: input.userId,
+        toolName: call.name,
+        toolCallId: call.id,
         offloaded: offload.offloaded,
         nodeId: offload.nodeId,
         resultRef: offload.resultRef,
@@ -268,11 +296,12 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
     content: fallback,
     meta: { mode: input.mode ?? "chat", stopped: "max_tool_iterations" },
   });
-  logAgentEvent("max-iterations", {
+  logAgentEvent(input.trace, "max_iterations", {
     mode: input.mode ?? "chat",
     chatId: input.chatId,
+    userId: input.userId,
     answerLength: fallback.length,
     answerPreview: truncateText(fallback, 200),
-  });
+  }, 1);
   return fallback;
 }

@@ -51,11 +51,13 @@ test("dispatchSchedulerTick runs due jobs first, then memory updates within the 
   );
 
   const calls: Array<string> = [];
+  const traceEvents: Array<{ source: string; event: string; payload?: unknown }> = [];
   const result = await dispatchSchedulerTick({
     jobs,
     memoryUpdateSettings: settings,
     maxItemsPerTick: 3,
     nowUnix,
+    trace: { emit: (event) => traceEvents.push(event) },
     runOneAutonomousJob: async ({ job }) => {
       calls.push(`job:${job.id}`);
       return { answer: "ok" } as any;
@@ -68,4 +70,8 @@ test("dispatchSchedulerTick runs due jobs first, then memory updates within the 
 
   expect(result).toEqual({ jobsRun: 2, memoryUpdatesRun: 1 });
   expect(calls).toEqual([`job:${firstJob.id}`, `job:${secondJob.id}`, "memory:user-4"]);
+  expect(traceEvents.map((event) => `${event.source}:${event.event}`)).toEqual([
+    "scheduler:tick.start",
+    "scheduler:tick.complete",
+  ]);
 });

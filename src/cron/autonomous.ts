@@ -11,6 +11,8 @@ import { MemoryUpdateSettingsService } from "../services/memory-update-settings"
 import { describeSchedule, normalizeSchedule } from "../services/schedules";
 import type { BotContext } from "../bot/context";
 import type { ToolRegistry } from "../tools/registry";
+import { emitTrace } from "../logging/helpers";
+import type { RuntimeTraceEmitter } from "../logging/types";
 import { splitTelegramMessage, truncateText } from "../utils/text";
 import { unixNow } from "../utils/time";
 
@@ -20,6 +22,7 @@ export type AutonomousDeps = {
   memory: MemoryService;
   registry: ToolRegistry;
   llm: LlmProvider;
+  trace?: RuntimeTraceEmitter;
 };
 
 export type AutonomousRunInput = AutonomousDeps & {
@@ -37,6 +40,7 @@ export type MemoryUpdateRunNowInput = {
   onProgress?: MemoryUpdateProgressReporter;
   nowUnix?: number;
   finishedUnix?: number;
+  trace?: RuntimeTraceEmitter;
 };
 
 let autonomousBusy = false;
@@ -142,6 +146,15 @@ export async function runOneAutonomousJob(input: AutonomousRunInput) {
   const finishedAt = input.finishedUnix ?? unixNow();
   const jobService = new AutonomousJobService(input.db);
   jobService.markRunStarted(input.job.id, now);
+  emitTrace(input.trace, {
+    minLevel: 1,
+    source: "autonomous",
+    event: "job.start",
+    chatId: input.job.chatId,
+    userId: input.job.userId,
+    jobId: String(input.job.id),
+    payload: { nowUnix: now, jobType: input.job.jobType, runCount: input.job.runCount },
+  });
 
   try {
     if (input.job.jobType === "hybrid" && input.job.messageText.trim()) {
@@ -158,6 +171,7 @@ export async function runOneAutonomousJob(input: AutonomousRunInput) {
       registry: input.registry,
       llm: input.llm,
       mode: "autonomous",
+      trace: input.trace,
     });
 
     const text = `🤖 Autonomous job #${input.job.id}\n\n${truncateText(answer, 3500)}`;
@@ -166,11 +180,30 @@ export async function runOneAutonomousJob(input: AutonomousRunInput) {
 
     jobService.markRunFinished(input.job.id, finishedAt, "success", null);
     const completion = jobService.recordSuccessfulRun(input.job.id);
+    emitTrace(input.trace, {
+      minLevel: 1,
+      source: "autonomous",
+      event: "job.complete",
+      chatId: input.job.chatId,
+      userId: input.job.userId,
+      jobId: String(input.job.id),
+      payload: { finishedAtUnix: finishedAt, answerLength: answer.length, deleted: completion.deleted, runCount: completion.runCount },
+    });
 
     return { job: completion.job, answer, deleted: completion.deleted, runCount: completion.runCount };
   } catch (error) {
     const message = toErrorMessage(error);
     jobService.markRunFinished(input.job.id, finishedAt, "error", message);
+    emitTrace(input.trace, {
+      minLevel: 1,
+      source: "autonomous",
+      event: "job.error",
+      chatId: input.job.chatId,
+      userId: input.job.userId,
+      jobId: String(input.job.id),
+      payload: { finishedAtUnix: finishedAt },
+      error,
+    });
     const failureText = `🤖 Autonomous job #${input.job.id} failed\n\n${truncateText(message, 3500)}`;
     await sendTelegramText(input.bot, input.job.chatId, failureText, `Failed to send autonomous job failure #${input.job.id}`);
     throw error;

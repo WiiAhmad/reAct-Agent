@@ -1,5 +1,7 @@
 import type { MemoryService } from "../../memory/core/service";
 import { runOneMemoryUpdateNow } from "../../cron/autonomous";
+import { emitTrace } from "../../logging/helpers";
+import type { RuntimeTraceEmitter } from "../../logging/types";
 import type { MemoryUpdateSettingsService } from "../../services/memory-update-settings";
 import type { MemoryUpdateProgressEvent } from "../../memory/pipeline/progress";
 
@@ -7,8 +9,10 @@ export type TelegramMemoryUpdateRunInput = {
   memory: MemoryService;
   settings: MemoryUpdateSettingsService;
   userId: string;
+  chatId?: string;
   sendMessage: (text: string) => Promise<unknown>;
   runNow?: typeof runOneMemoryUpdateNow;
+  trace?: RuntimeTraceEmitter;
 };
 
 export type TelegramMemoryUpdateRunStartResult =
@@ -24,9 +28,26 @@ function toErrorMessage(error: unknown) {
 async function safeSendMemoryUpdateMessage(input: TelegramMemoryUpdateRunInput, text: string) {
   try {
     await input.sendMessage(text);
+    emitTrace(input.trace, {
+      minLevel: 1,
+      source: "bot",
+      event: "outbound.send.complete",
+      chatId: input.chatId,
+      userId: input.userId,
+      payload: { textLength: text.length },
+    });
   } catch (error) {
     console.error("Telegram memory update message send failed", {
       userId: input.userId,
+      error,
+    });
+    emitTrace(input.trace, {
+      minLevel: 1,
+      source: "bot",
+      event: "error",
+      chatId: input.chatId,
+      userId: input.userId,
+      payload: { operation: "memory_update_send" },
       error,
     });
   }
@@ -77,8 +98,25 @@ export async function startTelegramMemoryUpdateRun(input: TelegramMemoryUpdateRu
   activeMemoryUpdateUsers.add(input.userId);
   try {
     await input.sendMessage("Memory update dimulai...");
+    emitTrace(input.trace, {
+      minLevel: 1,
+      source: "bot",
+      event: "outbound.send.complete",
+      chatId: input.chatId,
+      userId: input.userId,
+      payload: { textLength: "Memory update dimulai...".length },
+    });
   } catch (error) {
     activeMemoryUpdateUsers.delete(input.userId);
+    emitTrace(input.trace, {
+      minLevel: 1,
+      source: "bot",
+      event: "error",
+      chatId: input.chatId,
+      userId: input.userId,
+      payload: { operation: "memory_update_start_send" },
+      error,
+    });
     throw error;
   }
 

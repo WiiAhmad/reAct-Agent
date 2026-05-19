@@ -1,4 +1,6 @@
 import type { LlmProvider } from "../../agent/types";
+import { emitTrace, NEW_MEMORY_STACK_TAG } from "../../logging/helpers";
+import type { RuntimeTraceEmitter } from "../../logging/types";
 import type { MemoryBackend } from "../core/backend";
 import type { IMemoryStore } from "../core/store/types";
 import { runL1Pipeline } from "./l1";
@@ -32,11 +34,33 @@ function numericRecordId(recordId: string, fallback: number): number {
 }
 
 export class PipelineCoordinator {
+  private readonly store?: IMemoryStore;
+  private readonly trace?: RuntimeTraceEmitter;
+
   constructor(
     private readonly backend: MemoryBackend,
     private readonly llm: LlmProvider,
-    private readonly store?: IMemoryStore,
-  ) {}
+    traceOrStore?: RuntimeTraceEmitter | IMemoryStore,
+    store?: IMemoryStore,
+  ) {
+    if (traceOrStore && "emit" in traceOrStore) {
+      this.trace = traceOrStore;
+      this.store = store;
+    } else {
+      this.store = traceOrStore;
+    }
+  }
+
+  private emitStage(userId: string, stage: "l1" | "l2" | "l3", status: "start" | "complete" | "skip", payload: Record<string, unknown>) {
+    emitTrace(this.trace, {
+      minLevel: 2,
+      source: "memory",
+      event: `pipeline.${stage}.${status}`,
+      tags: [NEW_MEMORY_STACK_TAG],
+      userId,
+      payload,
+    });
+  }
 
   async runMaintenanceForUser(userId: string, force = false, options: MemoryUpdateProgressOptions = {}): Promise<PipelineMaintenanceResult> {
     const source = options.source ?? "scheduler";
@@ -61,12 +85,16 @@ export class PipelineCoordinator {
       : await this.backend.listPendingConversationEvidence(userId, afterConversationId, DEFAULT_EVIDENCE_LIMIT);
     if (pendingTurns.length === 0 && !force) {
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l1", status: "skip", reason: "no_pending_turns" });
+      this.emitStage(userId, "l1", "skip", { source, reason: "no_pending_turns" });
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l2", status: "skip", reason: "no_l1_work" });
+      this.emitStage(userId, "l2", "skip", { source, reason: "no_l1_work" });
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l3", status: "skip", reason: "no_scenario" });
+      this.emitStage(userId, "l3", "skip", { source, reason: "no_scenario" });
       return { l1Created: 0, l2ScenarioId: undefined, personaUpdated: false };
     }
 
     await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l1", status: "start", pendingTurns: pendingTurns.length });
+    this.emitStage(userId, "l1", "start", { source, pendingTurns: pendingTurns.length });
     const l1Result = pendingTurns.length === 0
       ? { createdAtoms: 0, lastConversationId: afterConversationId, checkpointAdvanced: false }
       : await runL1Pipeline(this.backend, this.llm, userId, pendingTurns, this.store);
@@ -85,10 +113,13 @@ export class PipelineCoordinator {
       createdAtoms: l1Result.createdAtoms,
       checkpointAdvanced: l1Result.checkpointAdvanced,
     });
+    this.emitStage(userId, "l1", "complete", { source, pendingTurns: pendingTurns.length, createdAtoms: l1Result.createdAtoms, checkpointAdvanced: l1Result.checkpointAdvanced });
 
     if (!force && l1Result.createdAtoms === 0) {
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l2", status: "skip", reason: "no_new_atoms" });
+      this.emitStage(userId, "l2", "skip", { source, reason: "no_new_atoms" });
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l3", status: "skip", reason: "no_scenario" });
+      this.emitStage(userId, "l3", "skip", { source, reason: "no_scenario" });
       return { l1Created: 0, l2ScenarioId: undefined, personaUpdated: false };
     }
 
@@ -106,20 +137,27 @@ export class PipelineCoordinator {
       : await this.backend.listMemoryAtoms(userId, DEFAULT_ATOM_LIMIT);
     if (atoms.length === 0) {
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l2", status: "skip", atomCount: 0, reason: "no_atoms" });
+      this.emitStage(userId, "l2", "skip", { source, atomCount: 0, reason: "no_atoms" });
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l3", status: "skip", reason: "no_scenario" });
+      this.emitStage(userId, "l3", "skip", { source, reason: "no_scenario" });
       return { l1Created: l1Result.createdAtoms, l2ScenarioId: undefined, personaUpdated: false };
     }
 
     await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l2", status: "start", atomCount: atoms.length });
+    this.emitStage(userId, "l2", "start", { source, atomCount: atoms.length });
     const l2Result = await runL2Pipeline(this.backend, this.llm, userId, atoms, this.store);
     if (!l2Result) {
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l2", status: "skip", atomCount: atoms.length, reason: "no_scenario" });
+      this.emitStage(userId, "l2", "skip", { source, atomCount: atoms.length, reason: "no_scenario" });
       await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l3", status: "skip", reason: "no_scenario" });
+      this.emitStage(userId, "l3", "skip", { source, reason: "no_scenario" });
       return { l1Created: l1Result.createdAtoms, l2ScenarioId: undefined, personaUpdated: false };
     }
     await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l2", status: "complete", atomCount: atoms.length, scenarioId: l2Result.scenarioId });
+    this.emitStage(userId, "l2", "complete", { source, atomCount: atoms.length, scenarioId: l2Result.scenarioId });
 
     await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l3", status: "start", scenarioId: l2Result.scenarioId });
+    this.emitStage(userId, "l3", "start", { source, scenarioId: l2Result.scenarioId });
     const personaUpdated = await runL3Pipeline(
       this.backend,
       this.llm,
@@ -129,6 +167,7 @@ export class PipelineCoordinator {
       this.store,
     );
     await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l3", status: "complete", scenarioId: l2Result.scenarioId, personaUpdated });
+    this.emitStage(userId, "l3", "complete", { source, scenarioId: l2Result.scenarioId, personaUpdated });
 
     return {
       l1Created: l1Result.createdAtoms,

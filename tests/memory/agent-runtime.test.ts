@@ -8,6 +8,9 @@ import { runReactAgent } from "../../src/agent/react-agent";
 import { createMemoryService } from "../../src/memory/integration/factory";
 import { ToolRegistry } from "../../src/tools/registry";
 import { createLocalTools } from "../../src/tools/local";
+import { NEW_MEMORY_STACK_TAG } from "../../src/logging/helpers";
+import { RuntimeTraceBus } from "../../src/logging/trace-bus";
+import type { RuntimeTraceEvent } from "../../src/logging/types";
 
 test("agent loop logs user and assistant turns through MemoryService", async () => {
   let seenMessages: Array<{ role: string; content?: string }> = [];
@@ -90,6 +93,81 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
     expect(history).toContain('"role":"user"');
     expect(history).toContain('"role":"assistant"');
     expect(db.query(`SELECT COUNT(*) AS count FROM conversations`).get()).toEqual({ count: 0 });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}, 20000);
+
+test("agent runtime emits trace events and tags memory-aware flow", async () => {
+  const llmCalls: Array<Array<{ role: string; content?: string }>> = [];
+  const llm = {
+    async complete({ messages }: { messages: Array<{ role: string; content?: string }> }) {
+      llmCalls.push(messages);
+      if (llmCalls.length === 1) {
+        return {
+          content: "Saya akan cek waktu saat ini.",
+          toolCalls: [{ id: "call_time", name: "tdai_current_datetime", arguments: {} }],
+        };
+      }
+      return { content: "Sekarang adalah waktu yang diminta.", toolCalls: [] };
+    },
+  };
+  const events: RuntimeTraceEvent[] = [];
+  const trace = new RuntimeTraceBus({
+    level: 3,
+    runId: "test-run",
+    pid: 123,
+    sinks: [(event) => events.push(event)],
+    now: () => "2026-05-19T00:00:00.000Z",
+  });
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: false,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+      },
+    });
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await runReactAgent({ chatId: "c-trace", userId: "u1", input: "sekarang hari apa?", memory, registry, llm: llm as any, mode: "chat", trace });
+
+    expect(events.filter((event) => event.source === "agent").map((event) => event.event)).toEqual([
+      "run.start",
+      "l15.complete",
+      "context.loaded",
+      "iteration.start",
+      "response.received",
+      "tool.call",
+      "tool.result",
+      "iteration.start",
+      "response.received",
+      "run.complete",
+    ]);
+    expect(events.some((event) => event.source === "agent" && event.tags.includes(NEW_MEMORY_STACK_TAG))).toBe(true);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -1,6 +1,8 @@
 import { appendFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type { LlmProvider } from "../../agent/types";
+import { emitTrace, NEW_MEMORY_STACK_TAG } from "../../logging/helpers";
+import type { RuntimeTraceEmitter } from "../../logging/types";
 import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "../core/backend";
 import type { EventMeta } from "../core/types";
@@ -63,6 +65,7 @@ export class OffloadService {
     private readonly options: OffloadServiceOptions,
     private readonly llm: LlmProvider,
     private readonly writeTextFile: FileWriter = (path, content) => writeFile(path, content, "utf8"),
+    private readonly trace?: RuntimeTraceEmitter,
   ) {}
 
   async offloadToolResult(input: OffloadToolResultInput): Promise<OffloadToolResult> {
@@ -98,6 +101,7 @@ export class OffloadService {
       });
       await this.persistL1Evidence(input, nodeId, summary, undefined, score, createdAt);
       await this.tryWriteTaskCanvas(input.chatId, input.taskId);
+      this.emitOffload("offload.inline", input, { nodeId, summaryLength: summary.length, rawLength: input.rawResult.length });
       return { content: input.rawResult, offloaded: false, nodeId, summary };
     }
 
@@ -162,6 +166,7 @@ export class OffloadService {
       });
       await this.persistL1Evidence(input, nodeId, summary, undefined, score, createdAt);
       await this.tryWriteTaskCanvas(input.chatId, input.taskId);
+      this.emitOffload("offload.fallback", input, { nodeId, summaryLength: summary.length, rawLength: input.rawResult.length });
 
       return {
         content: ["[offload-fallback]", `tool=${input.toolName}`, `summary=${summary}`].join("\n"),
@@ -173,6 +178,7 @@ export class OffloadService {
 
     await this.persistL1Evidence(input, nodeId, summary, relativePath, score, createdAt);
     await this.tryWriteTaskCanvas(input.chatId, input.taskId);
+    this.emitOffload("offload.ref_written", input, { nodeId, resultRef: relativePath, summaryLength: summary.length, rawLength: input.rawResult.length });
 
     return {
       content: [
@@ -187,6 +193,21 @@ export class OffloadService {
       resultRef: relativePath,
       summary,
     };
+  }
+
+  private emitOffload(event: string, input: OffloadToolResultInput, payload: Record<string, unknown>) {
+    emitTrace(this.trace, {
+      minLevel: 2,
+      source: "memory",
+      event,
+      tags: [NEW_MEMORY_STACK_TAG],
+      chatId: input.chatId,
+      userId: input.userId,
+      taskId: input.taskId == null ? undefined : String(input.taskId),
+      toolName: input.toolName,
+      toolCallId: input.toolCallId,
+      payload,
+    });
   }
 
   private async persistL1Evidence(

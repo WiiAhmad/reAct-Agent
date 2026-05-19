@@ -70,6 +70,8 @@ test("runOneAutonomousJob marks the job as successful and sends the response", a
     schedule: { scheduleMode: "interval", intervalSec: 3600 },
   });
   const sent: Array<{ chatId: string; text: string }> = [];
+  const traceEvents: Array<{ source: string; event: string; chatId?: string; userId?: string; jobId?: string }> = [];
+  const agentTraces: unknown[] = [];
 
   const startedAt = Math.floor(Date.UTC(2026, 4, 17, 11, 25, 0) / 1000);
   const finishedAt = startedAt + 37;
@@ -87,7 +89,11 @@ test("runOneAutonomousJob marks the job as successful and sends the response", a
     registry: { } as any,
     llm: { } as any,
     job,
-    runAgent: async () => "Autonomous answer",
+    trace: { emit: (event) => traceEvents.push(event) },
+    runAgent: async (agentInput: any) => {
+      agentTraces.push(agentInput.trace);
+      return "Autonomous answer";
+    },
     nowUnix: startedAt,
     finishedUnix: finishedAt,
   });
@@ -98,6 +104,11 @@ test("runOneAutonomousJob marks the job as successful and sends the response", a
   expect(refreshed?.lastStatus).toBe("success");
   expect(refreshed?.lastRunAt).toBe(startedAt);
   expect(refreshed?.lastFinishedAt).toBe(finishedAt);
+  expect(agentTraces).toEqual([expect.any(Object)]);
+  expect(traceEvents.map((event) => `${event.source}:${event.event}`)).toEqual([
+    "autonomous:job.start",
+    "autonomous:job.complete",
+  ]);
 });
 
 test("runOneAutonomousJob sends hybrid fixed text before agent response and deletes after max_runs", async () => {

@@ -36,7 +36,8 @@ test("offload writes refs and nodes without updating a canvas when no taskId is 
     });
     await backend.init();
 
-    const ok = new OffloadService(backend, offloadOptions({ offloadMinChars: 10, offloadSummaryChars: 80 }), noopLlm as any);
+    const traceEvents: Array<{ source: string; event: string; tags?: string[] }> = [];
+    const ok = new OffloadService(backend, offloadOptions({ offloadMinChars: 10, offloadSummaryChars: 80 }), noopLlm as any, undefined, { emit: (event) => traceEvents.push(event) });
     const stored = await ok.offloadToolResult({
       chatId: "c1",
       userId: "u1",
@@ -48,6 +49,11 @@ test("offload writes refs and nodes without updating a canvas when no taskId is 
     expect(stored.offloaded).toBe(true);
     expect(stored.resultRef).toContain("refs/c1/");
     expect(stored.content).toContain("result_ref=");
+    expect(traceEvents).toContainEqual(expect.objectContaining({
+      source: "memory",
+      event: "offload.ref_written",
+      tags: expect.arrayContaining(["new-memory-stack"]),
+    }));
 
     const refRows = db
       .query(`SELECT chat_id, user_id, node_id, file_path, summary FROM memory_offload_refs ORDER BY id ASC`)

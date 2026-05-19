@@ -139,7 +139,8 @@ test("InteractionLogService writes canonical chat history without SQLite transcr
   };
 
   try {
-    const service = new InteractionLogService(backend as any, { enabled: false, historyDir });
+    const traceEvents: Array<{ source: string; event: string; tags?: string[] }> = [];
+    const service = new InteractionLogService(backend as any, { enabled: false, historyDir }, { emit: (event) => traceEvents.push(event) });
     await service.logUserMessage({ chatId: "chat-1", userId: "user-1", content: "hello", mode: "chat" });
     await service.logAssistantMessage({ chatId: "chat-1", userId: "user-1", content: "hi" });
     await service.logToolResult({
@@ -155,6 +156,12 @@ test("InteractionLogService writes canonical chat history without SQLite transcr
     expect(rows.map((row) => row.role)).toEqual(["user", "assistant", "tool"]);
     expect(rows[0]?.meta).toEqual({ mode: "chat" });
     expect(rows[2]?.meta).toEqual({ tool_name: "demo", tool_call_id: "call_1", offloaded: false });
+    expect(traceEvents.map((event) => `${event.source}:${event.event}`)).toEqual([
+      "memory:interaction.user_message.logged",
+      "memory:interaction.assistant_message.logged",
+      "memory:interaction.tool_result.logged",
+    ]);
+    expect(traceEvents.every((event) => event.tags?.includes("new-memory-stack"))).toBe(true);
     expect(sqliteConversationWrites).toBe(0);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

@@ -69,7 +69,8 @@ function createBotHarness() {
   resetActiveMemoryUpdateRunsForTest();
   config.telegram.botToken = "12345:test-token";
   const { deps, maintenance, maintenanceCalls, settingsRuns } = createMemoryUpdateDeps();
-  const bot = createTelegramBot(deps as any);
+  const traceEvents: Array<{ source: string; event: string; chatId?: string; userId?: string }> = [];
+  const bot = createTelegramBot({ ...deps, trace: { emit: (event: any) => traceEvents.push(event) } } as any);
   (bot as any).me = { id: 12345, is_bot: true, first_name: "Test Bot", username: "test_bot" };
   const apiCalls: ApiCall[] = [];
   const recordApiCall = (method: string, payload: Record<string, unknown> = {}) => {
@@ -101,11 +102,11 @@ function createBotHarness() {
     return { ok: true, result: recordApiCall(method, payload) };
   }) as any);
 
-  return { bot, apiCalls, maintenance, maintenanceCalls, settingsRuns };
+  return { bot, apiCalls, maintenance, maintenanceCalls, settingsRuns, traceEvents };
 }
 
 test("stale memory update run-now callback starts background maintenance without waiting", async () => {
-  const { bot, apiCalls, maintenance, maintenanceCalls, settingsRuns } = createBotHarness();
+  const { bot, apiCalls, maintenance, maintenanceCalls, settingsRuns, traceEvents } = createBotHarness();
 
   const update = {
     update_id: 1,
@@ -135,6 +136,10 @@ test("stale memory update run-now callback starts background maintenance without
     method: "sendMessage",
     payload: { chat_id: "99", text: "Memory update dimulai..." },
   });
+  expect(traceEvents.map((event) => `${event.source}:${event.event}`)).toEqual([
+    "bot:callback.memory_update.run_now",
+    "bot:outbound.send.complete",
+  ]);
 
   maintenance.resolve({ l1Created: 1, l2ScenarioId: 7, personaUpdated: true });
   await handlePromise;

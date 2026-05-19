@@ -9,6 +9,8 @@ import {
   searchChatHistory,
   type ChatHistoryRow,
 } from "../history/jsonl";
+import { emitTrace, NEW_MEMORY_STACK_TAG } from "../../logging/helpers";
+import type { RuntimeTraceEmitter } from "../../logging/types";
 import { exportInteractionEventJsonl } from "./jsonl-export";
 
 type InteractionLogServiceOptions = {
@@ -21,6 +23,7 @@ export class InteractionLogService {
   constructor(
     private readonly backend: MemoryBackend,
     private readonly options: InteractionLogServiceOptions,
+    private readonly trace?: RuntimeTraceEmitter,
   ) {}
 
   async listInteractionEvents(userId: string, chatId: string, limit: number): Promise<InteractionEvent[]> {
@@ -57,6 +60,7 @@ export class InteractionLogService {
       meta,
       createdAt,
     });
+    this.emitLogged("interaction.user_message.logged", input.chatId, input.userId, { eventId, contentLength: input.content.length });
 
     return eventId;
   }
@@ -91,6 +95,7 @@ export class InteractionLogService {
       meta,
       createdAt,
     });
+    this.emitLogged("interaction.assistant_message.logged", input.chatId, input.userId, { eventId, contentLength: input.content.length });
 
     return eventId;
   }
@@ -136,6 +141,7 @@ export class InteractionLogService {
       meta: input.meta ?? {},
       createdAt,
     });
+    this.emitLogged("interaction.tool_call.logged", input.chatId, input.userId, { eventId, toolName: input.toolName, toolCallId: input.toolCallId });
 
     return eventId;
   }
@@ -184,6 +190,7 @@ export class InteractionLogService {
       meta: input.meta ?? {},
       createdAt,
     });
+    this.emitLogged("interaction.tool_result.logged", input.chatId, input.userId, { eventId, toolName: input.toolName, toolCallId: input.toolCallId, offloaded: input.offloaded });
 
     return eventId;
   }
@@ -210,6 +217,18 @@ export class InteractionLogService {
   private async exportIfEnabled(event: InteractionEvent): Promise<void> {
     if (this.options.enabled === false || !this.options.exportDir) return;
     await exportInteractionEventJsonl(join(this.options.exportDir, `${event.chatId}.jsonl`), event);
+  }
+
+  private emitLogged(event: string, chatId: string, userId: string, payload: Record<string, unknown>) {
+    emitTrace(this.trace, {
+      minLevel: 2,
+      source: "memory",
+      event,
+      tags: [NEW_MEMORY_STACK_TAG],
+      chatId,
+      userId,
+      payload,
+    });
   }
 }
 

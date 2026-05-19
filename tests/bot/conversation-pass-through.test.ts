@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createTelegramBot } from "../../src/bot/bot";
 import { memoryUpdateCallbacks } from "../../src/bot/conversations/memory-update";
+import type { RuntimeTraceInput } from "../../src/logging/types";
 import { resetActiveMemoryUpdateRunsForTest } from "../../src/bot/conversations/memory-update-runner";
 import { renderMainMenuScreen } from "../../src/bot/ui/renderers";
 import { config } from "../../src/config";
@@ -28,7 +29,7 @@ const baseJob = {
   scheduleLabel: "10m",
 };
 
-function createBotHarness() {
+function createBotHarness(options: { trace?: { emit: (event: RuntimeTraceInput) => void } } = {}) {
   resetActiveMemoryUpdateRunsForTest();
   config.telegram.botToken = "12345:test-token";
   const jobs = [{ ...baseJob }];
@@ -50,7 +51,19 @@ function createBotHarness() {
   const deps = {
     memory: {
       memoryStatus: async () => "status",
-      recall: async () => ({ persona: "Persona", atoms: [], scenarios: [], taskCanvas: null, taskCanvases: [] }),
+      logUserMessage: async () => 1,
+      judgeTaskTurn: async () => ({
+        taskId: null,
+        judgment: {
+          isLongTask: false,
+          isContinuation: false,
+          taskCompleted: false,
+          source: "test",
+        },
+      }),
+      recentMessages: async () => [],
+      recall: async () => ({ persona: "Persona", atoms: [], scenarios: [], conversations: [], taskCanvas: null, taskCanvases: [] }),
+      logAssistantMessage: async () => 2,
       countGeneratedSkills: async () => 0,
       listTaskCanvases: async () => [{ id: 1, label: "Task canvas" }],
       generateSkillDraft: async () => ({ ok: true, skillName: "draft-skill", filePath: "generated/draft.md" }),
@@ -134,8 +147,13 @@ function createBotHarness() {
         if (index >= 0) jobs.splice(index, 1);
       },
     },
-    registry: {},
-    llm: {},
+    registry: {
+      list: () => [],
+    },
+    llm: {
+      complete: async () => ({ content: "agent answer", toolCalls: [] }),
+    },
+    trace: options.trace,
   };
 
   const bot = createTelegramBot(deps as any);
@@ -184,6 +202,19 @@ async function sendMenu(bot: ReturnType<typeof createTelegramBot>, updateId: num
   } as any);
 }
 
+async function sendText(bot: ReturnType<typeof createTelegramBot>, updateId: number, text: string) {
+  await bot.handleUpdate({
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      date: 1,
+      chat,
+      from,
+      text,
+    },
+  } as any);
+}
+
 function expectMainMenuScreen(apiCalls: ApiCall[]) {
   expect(apiCalls.some((call) =>
     (call.method === "sendMessage" || call.method === "editMessageText") &&
@@ -191,6 +222,23 @@ function expectMainMenuScreen(apiCalls: ApiCall[]) {
     call.payload.text === renderMainMenuScreen()
   )).toBe(true);
 }
+
+test("plain Telegram messages pass runtime trace into agent execution", async () => {
+  const events: RuntimeTraceInput[] = [];
+  const { bot, apiCalls } = createBotHarness({ trace: { emit: (event) => events.push(event) } });
+
+  await sendText(bot, 30, "hello agent");
+
+  expect(events.some((event) =>
+    event.source === "agent" &&
+    event.event === "run.start" &&
+    event.minLevel === 1 &&
+    event.chatId === "99" &&
+    event.userId === "42" &&
+    (event.payload as { input?: string } | undefined)?.input === "hello agent"
+  )).toBe(true);
+  expect(apiCalls.some((call) => call.method === "sendMessage" && call.payload.text === "agent answer")).toBe(true);
+});
 
 const passThroughScenarios: Array<{
   name: string;

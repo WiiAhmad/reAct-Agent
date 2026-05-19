@@ -1,12 +1,24 @@
 import type { Database } from "bun:sqlite";
 import { nowIso } from "../utils/time";
 import type { ToolDefinition } from "../agent/types";
+import { emitTrace } from "../logging/helpers";
+import type { RuntimeTraceEmitter } from "../logging/types";
 import type { RegisteredTool, ToolContext } from "./types";
+
+function formatToolError(error: unknown): { name: string; message: string } {
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message };
+  }
+  return { name: typeof error, message: String(error) };
+}
 
 export class ToolRegistry {
   private readonly tools = new Map<string, RegisteredTool>();
 
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly trace?: RuntimeTraceEmitter,
+  ) {}
 
   register(tool: RegisteredTool) {
     this.tools.set(tool.name, tool);
@@ -46,9 +58,40 @@ export class ToolRegistry {
   async call(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) return `Tool not found: ${name}`;
+
+    emitTrace(this.trace, {
+      minLevel: 2,
+      source: "tool",
+      event: "execute.start",
+      toolName: name,
+      chatId: ctx.chatId,
+      userId: ctx.userId,
+      payload: { args },
+    });
+
     try {
-      return await tool.execute(args, ctx);
+      const result = await tool.execute(args, ctx);
+      emitTrace(this.trace, {
+        minLevel: 3,
+        source: "tool",
+        event: "execute.complete",
+        toolName: name,
+        chatId: ctx.chatId,
+        userId: ctx.userId,
+        payload: { args, result },
+      });
+      return result;
     } catch (error) {
+      emitTrace(this.trace, {
+        minLevel: 1,
+        source: "tool",
+        event: "execute.error",
+        toolName: name,
+        chatId: ctx.chatId,
+        userId: ctx.userId,
+        payload: { args },
+        error: formatToolError(error),
+      });
       return `Tool ${name} failed: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

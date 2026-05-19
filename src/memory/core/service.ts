@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentMessage, LlmProvider } from "../../agent/types";
+import { emitTrace, NEW_MEMORY_STACK_TAG } from "../../logging/helpers";
+import type { RuntimeTraceEmitter } from "../../logging/types";
 import { generateL4Skill, validateGeneratedSkill, writeDraftSkill } from "../offload/l4";
 import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "./backend";
@@ -123,6 +125,7 @@ type MemoryServiceState = {
   store?: IMemoryStore;
   llm: LlmProvider;
   options: MemoryServiceOptions;
+  trace?: RuntimeTraceEmitter;
 };
 
 const memoryServiceState = new WeakMap<MemoryService, MemoryServiceState>();
@@ -196,6 +199,7 @@ export class MemoryService {
       historyDir: resolve(options.dataDir, "history"),
     }),
     store?: IMemoryStore,
+    trace?: RuntimeTraceEmitter,
   ) {
     memoryServiceState.set(this, {
       backend,
@@ -206,11 +210,21 @@ export class MemoryService {
       store,
       llm,
       options,
+      trace,
     });
   }
 
   async recall(userId: string, query: string, maxResults: number, chatId?: string): Promise<MemoryServiceRecall> {
-    const { recallService, interactionLogService, store } = getState(this);
+    const { recallService, interactionLogService, store, trace } = getState(this);
+    emitTrace(trace, {
+      minLevel: 2,
+      source: "memory",
+      event: "recall.start",
+      tags: [NEW_MEMORY_STACK_TAG],
+      chatId,
+      userId,
+      payload: { queryLength: query.length, maxResults },
+    });
     const [recall, conversationRows] = await Promise.all([
       recallService.recall(userId, query, maxResults, chatId),
       store ? Promise.resolve([]) : interactionLogService.searchConversations(userId, query, maxResults, chatId),
@@ -231,7 +245,7 @@ export class MemoryService {
         created_at: conversation.created_at,
       }));
 
-    return {
+    const result = {
       persona: recall.persona,
       atoms: recall.atoms,
       scenarios: recall.scenarios.map((scenario) => ({
@@ -244,6 +258,21 @@ export class MemoryService {
       taskCanvas: recall.taskCanvas,
       taskCanvases: recall.taskCanvases,
     };
+    emitTrace(trace, {
+      minLevel: 2,
+      source: "memory",
+      event: "recall.complete",
+      tags: [NEW_MEMORY_STACK_TAG],
+      chatId,
+      userId,
+      payload: {
+        atomCount: result.atoms.length,
+        scenarioCount: result.scenarios.length,
+        conversationCount: result.conversations.length,
+        taskCanvasCount: result.taskCanvases.length,
+      },
+    });
+    return result;
   }
 
   async searchConversations(userId: string, query: string, limit = 5): Promise<string> {

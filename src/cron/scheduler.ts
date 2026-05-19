@@ -1,10 +1,12 @@
 import cron from "node-cron";
 import type { AutonomousJobRow, AutonomousJobService } from "../services/autonomous-jobs";
 import type { MemoryUpdateSettingsService } from "../services/memory-update-settings";
+import { emitTrace } from "../logging/helpers";
+import type { RuntimeTraceEmitter } from "../logging/types";
 import { unixNow } from "../utils/time";
 
-export type RunOneAutonomousJob = (input: { job: AutonomousJobRow; nowUnix: number }) => Promise<unknown>;
-export type RunOneMemoryUpdateNow = (input: { userId: string; nowUnix: number }) => Promise<unknown>;
+export type RunOneAutonomousJob = (input: { job: AutonomousJobRow; nowUnix: number; trace?: RuntimeTraceEmitter }) => Promise<unknown>;
+export type RunOneMemoryUpdateNow = (input: { userId: string; nowUnix: number; trace?: RuntimeTraceEmitter }) => Promise<unknown>;
 
 export type SchedulerDispatchInput = {
   jobs: AutonomousJobService;
@@ -13,6 +15,7 @@ export type SchedulerDispatchInput = {
   nowUnix?: number;
   runOneAutonomousJob: RunOneAutonomousJob;
   runOneMemoryUpdateNow: RunOneMemoryUpdateNow;
+  trace?: RuntimeTraceEmitter;
 };
 
 function logCronEvent(event: string, details: Record<string, unknown>) {
@@ -22,12 +25,18 @@ function logCronEvent(event: string, details: Record<string, unknown>) {
 export async function dispatchSchedulerTick(input: SchedulerDispatchInput) {
   const nowUnix = input.nowUnix ?? unixNow();
   const dueJobs = input.jobs.listDueJobs(nowUnix, input.maxItemsPerTick);
+  emitTrace(input.trace, {
+    minLevel: 1,
+    source: "scheduler",
+    event: "tick.start",
+    payload: { nowUnix, dueJobCount: dueJobs.length, maxItemsPerTick: input.maxItemsPerTick },
+  });
 
   let jobsRun = 0;
   for (const job of dueJobs) {
     jobsRun += 1;
     try {
-      await input.runOneAutonomousJob({ job, nowUnix });
+      await input.runOneAutonomousJob({ job, nowUnix, trace: input.trace });
     } catch (error) {
       console.error(`Scheduler autonomous job failed for ${job.id}`, error);
     }
@@ -40,12 +49,18 @@ export async function dispatchSchedulerTick(input: SchedulerDispatchInput) {
   for (const userId of dueUsers) {
     memoryUpdatesRun += 1;
     try {
-      await input.runOneMemoryUpdateNow({ userId, nowUnix });
+      await input.runOneMemoryUpdateNow({ userId, nowUnix, trace: input.trace });
     } catch (error) {
       console.error(`Scheduler memory update failed for ${userId}`, error);
     }
   }
 
+  emitTrace(input.trace, {
+    minLevel: 1,
+    source: "scheduler",
+    event: "tick.complete",
+    payload: { nowUnix, dueJobCount: dueJobs.length, dueUserCount: dueUsers.length, jobsRun, memoryUpdatesRun },
+  });
   return { jobsRun, memoryUpdatesRun };
 }
 
@@ -60,6 +75,12 @@ export function startSchedulerLoop(input: SchedulerLoopInput) {
   const task = cron.schedule(input.tickCron, async () => {
     if (busy) {
       logCronEvent("scheduler-skip", { reason: "busy" });
+      emitTrace(input.trace, {
+        minLevel: 1,
+        source: "scheduler",
+        event: "tick.busy_skip",
+        payload: { cron: input.tickCron, reason: "busy" },
+      });
       return;
     }
 
@@ -72,6 +93,7 @@ export function startSchedulerLoop(input: SchedulerLoopInput) {
         nowUnix: input.nowUnixFn ? input.nowUnixFn() : unixNow(),
         runOneAutonomousJob: input.runOneAutonomousJob,
         runOneMemoryUpdateNow: input.runOneMemoryUpdateNow,
+        trace: input.trace,
       });
 
       logCronEvent("scheduler-tick", {

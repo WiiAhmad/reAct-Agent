@@ -6,6 +6,7 @@ import { MemoryService } from "../core/service";
 import { InteractionLogService } from "../events/service";
 import { OffloadService } from "../offload/service";
 import { PipelineCoordinator } from "../pipeline/coordinator";
+import type { RuntimeTraceEmitter } from "../../logging/types";
 import { RecallService } from "../recall/service";
 
 type MemoryServiceFactoryConfig = {
@@ -99,7 +100,7 @@ const defaultL4 = {
   maxSkillChars: 20000,
 };
 
-export async function createMemoryService(db: Database, llm: LlmProvider, config: MemoryServiceFactoryConfig): Promise<MemoryService> {
+export async function createMemoryService(db: Database, llm: LlmProvider, config: MemoryServiceFactoryConfig, trace?: RuntimeTraceEmitter): Promise<MemoryService> {
   const generatedSkillsDir = config.storage.memoryGeneratedSkillsDir ?? `${config.storage.dataDir}/memory/skills`;
   const l1 = config.memory.l1 ?? defaultL1;
   const l2 = config.memory.l2 ?? defaultL2;
@@ -126,15 +127,15 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
     enabled: config.memory.jsonlExportEnabled,
     exportDir: config.storage.memoryJsonlExportDir,
     historyDir: config.storage.historyDir,
-  });
+  }, trace);
   const offloadService = new OffloadService(backend, {
     offloadMinChars: config.memory.offloadEnabled ? config.memory.offloadMinChars : Number.MAX_SAFE_INTEGER,
     offloadSummaryChars: config.memory.offloadSummaryChars,
     l1,
     l2,
     jsonlEnabled: config.memory.jsonlExportEnabled,
-  }, llm);
-  const pipelineCoordinator = new PipelineCoordinator(backend, llm, store);
+  }, llm, undefined, trace);
+  const pipelineCoordinator = new PipelineCoordinator(backend, llm, trace, store);
 
   return new MemoryService(
     backend,
@@ -157,5 +158,6 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
     pipelineCoordinator,
     interactionLogService,
     store,
+    trace,
   );
 }
