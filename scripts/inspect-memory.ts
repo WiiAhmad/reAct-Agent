@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { db, initDb } from "../src/db";
 import { config } from "../src/config";
+import { SqliteMemoryStore } from "../src/memory/backends/sqlite/store";
+import { buildInspectMemoryDump, formatInspectMemoryReport } from "../src/memory/debug/inspect-memory-report";
 import { createMemoryService } from "../src/memory/integration/factory";
 
 const llm = {
@@ -29,6 +31,12 @@ const memory = await createMemoryService(db, llm as any, {
     jsonlExportEnabled: config.memory.jsonlExportEnabled,
   },
 });
+const store = new SqliteMemoryStore(db, {
+  sqliteVecEnabled: config.memory.sqliteVecEnabled,
+  bm25Enabled: true,
+  bm25Language: "en",
+});
+await store.init({ provider: "local", model: "deterministic-local", dimensions: 64 });
 
 if (!userId) {
   const rows = db.query(`SELECT DISTINCT user_id FROM conversations ORDER BY user_id`).all() as Array<{ user_id: string }>;
@@ -36,7 +44,7 @@ if (!userId) {
   process.exit(0);
 }
 
-console.log(await memory.memoryStatus(userId, chatId || undefined));
-const recall = await memory.recall(userId, "persona preferences project memory", 5, chatId || undefined);
-if (recall.persona) console.log(`\n--- persona ---\n${recall.persona}`);
-if (recall.scenarios.length) console.log(`\n--- scenarios ---\n${recall.scenarios.map((scenario) => `#${scenario.id} ${scenario.title}`).join("\n")}`);
+const status = await memory.memoryStatus(userId, chatId || undefined);
+const profiles = await store.pullProfiles();
+const dump = buildInspectMemoryDump(profiles, userId, chatId || undefined);
+console.log(formatInspectMemoryReport(status, dump));
