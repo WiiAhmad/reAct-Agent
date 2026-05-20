@@ -1,5 +1,7 @@
 export type RuntimeLogLevel = 1 | 2 | 3;
 
+export type RuntimeRequestType = "telegram_message" | "autonomous_job" | "memory_update" | "unscoped";
+
 export interface RuntimeCliArgs {
   logLevel?: RuntimeLogLevel;
   migrateOnly: boolean;
@@ -14,6 +16,8 @@ export interface RuntimeTraceInput {
   userId?: string;
   taskId?: string;
   jobId?: string;
+  requestId?: string;
+  requestType?: RuntimeRequestType;
   toolName?: string;
   toolCallId?: string;
   durationMs?: number;

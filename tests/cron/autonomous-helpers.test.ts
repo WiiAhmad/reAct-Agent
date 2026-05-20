@@ -4,6 +4,7 @@ import { migrate } from "../../src/db/schema";
 import { AutonomousJobService } from "../../src/services/autonomous-jobs";
 import { MemoryUpdateSettingsService } from "../../src/services/memory-update-settings";
 import { mapAutonomousJobRow, runOneAutonomousJob, runOneMemoryUpdateNow } from "../../src/cron/autonomous";
+import { TracedLlmProvider } from "../../src/agent/providers/traced";
 
 function makeDb() {
   const db = new Database(":memory:");
@@ -105,10 +106,60 @@ test("runOneAutonomousJob marks the job as successful and sends the response", a
   expect(refreshed?.lastRunAt).toBe(startedAt);
   expect(refreshed?.lastFinishedAt).toBe(finishedAt);
   expect(agentTraces).toEqual([expect.any(Object)]);
-  expect(traceEvents.map((event) => `${event.source}:${event.event}`)).toEqual([
+  expect(traceEvents.filter((event) => event.source === "autonomous").map((event) => `${event.source}:${event.event}`)).toEqual([
     "autonomous:job.start",
     "autonomous:job.complete",
   ]);
+});
+
+test("runOneAutonomousJob emits one llm request summary for provider work inside the job", async () => {
+  const db = makeDb();
+  const jobs = new AutonomousJobService(db);
+  const job = jobs.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Check in with the team",
+    schedule: { scheduleMode: "interval", intervalSec: 3600 },
+  });
+  const traceEvents: any[] = [];
+  const trace = { emit: (event: any) => traceEvents.push(event) };
+  const llm = new TracedLlmProvider({
+    complete: async () => ({ content: "Autonomous answer", toolCalls: [] }),
+  }, {
+    provider: "openai",
+    model: "gpt-test",
+    trace,
+  });
+
+  await runOneAutonomousJob({
+    db,
+    bot: { api: { sendMessage: async () => ({}) } } as any,
+    memory: {} as any,
+    registry: {} as any,
+    llm,
+    job,
+    trace,
+    runAgent: async ({ llm }) => {
+      const response = await llm.complete({
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        meta: { origin: "agent" },
+      });
+      return response.content;
+    },
+    nowUnix: 1_779_000_000,
+    finishedUnix: 1_779_000_030,
+  });
+
+  const summaries = traceEvents.filter((event) => event.source === "llm" && event.event === "request.summary");
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toEqual(expect.objectContaining({
+    requestType: "autonomous_job",
+    jobId: String(job.id),
+    chatId: "chat-1",
+    userId: "user-1",
+    payload: expect.objectContaining({ llmCallCount: 1, byOrigin: { agent: 1 } }),
+  }));
 });
 
 test("runOneAutonomousJob sends hybrid fixed text before agent response and deletes after max_runs", async () => {
@@ -242,6 +293,46 @@ test("runOneAutonomousJob does not count or delete hybrid jobs when fixed text f
   expect(agentInputs).toEqual([]);
   expect(refreshed?.lastStatus).toBe("error");
   expect(refreshed?.runCount).toBe(0);
+});
+
+test("runOneMemoryUpdateNow emits one llm request summary for maintenance provider work", async () => {
+  const db = makeDb();
+  const settings = new MemoryUpdateSettingsService(db);
+  const traceEvents: any[] = [];
+  const trace = { emit: (event: any) => traceEvents.push(event) };
+  const llm = new TracedLlmProvider({
+    complete: async () => ({ content: JSON.stringify([{ text: "summary", importance: 3, source_turn_ids: [1] }]), toolCalls: [] }),
+  }, {
+    provider: "anthropic",
+    model: "claude-test",
+    trace,
+  });
+
+  await runOneMemoryUpdateNow({
+    memory: {
+      runMaintenanceForUser: async () => {
+        await llm.complete({
+          messages: [{ role: "user", content: "maintenance" }],
+          tools: [],
+          meta: { origin: "memory.l1" },
+        });
+        return { l1Created: 1, l2ScenarioId: 17, personaUpdated: true };
+      },
+    } as any,
+    settings,
+    userId: "user-1",
+    trace,
+    nowUnix: 1_779_000_000,
+    finishedUnix: 1_779_000_030,
+  });
+
+  const summaries = traceEvents.filter((event) => event.source === "llm" && event.event === "request.summary");
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toEqual(expect.objectContaining({
+    requestType: "memory_update",
+    userId: "user-1",
+    payload: expect.objectContaining({ llmCallCount: 1, byOrigin: { "memory.l1": 1 } }),
+  }));
 });
 
 test("runOneMemoryUpdateNow runs maintenance and marks the settings as successful", async () => {

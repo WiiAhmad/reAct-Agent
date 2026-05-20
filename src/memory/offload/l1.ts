@@ -74,6 +74,7 @@ export async function generateL1EvidenceSummary(llm: LlmProvider, input: L1Evide
       },
     ],
     tools: [],
+    meta: { origin: "offload.l1" },
   });
 
   const parsed = parseL1EvidenceJson(response.content);

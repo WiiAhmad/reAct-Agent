@@ -38,6 +38,7 @@ export async function runL3Pipeline(
       { role: "user", content: `scenario_id=${scenarioId}\n${scenarioMarkdown}` },
     ],
     tools: [],
+    meta: { origin: "memory.l3" },
   });
 
   if (store?.syncProfiles) {

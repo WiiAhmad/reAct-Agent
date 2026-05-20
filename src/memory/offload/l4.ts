@@ -97,6 +97,7 @@ export async function generateL4Skill(llm: LlmProvider, input: L4Request): Promi
     messages: buildPrompt(input),
     tools: [],
     temperature: 0,
+    meta: { origin: "offload.l4" },
   });
   const parsed = parseL4Json(response.content);
   if (!parsed || parsed.skillContent.length > input.maxSkillChars) return undefined;

@@ -118,6 +118,7 @@ export async function generateL2MermaidPatch(llm: LlmProvider, input: L2Input): 
       },
     ],
     tools: [],
+    meta: { origin: "offload.l2" },
   });
 
   const parsed = parseL2MermaidJson(response.content);

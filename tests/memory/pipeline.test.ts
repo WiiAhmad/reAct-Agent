@@ -33,6 +33,42 @@ const fakeLlm: LlmProvider = {
   },
 };
 
+test("pipeline tags provider calls with L1/L2/L3 origin metadata", async () => {
+  const origins: string[] = [];
+  const llm: LlmProvider = {
+    async complete(request) {
+      origins.push(request.meta?.origin ?? "missing");
+      const system = String(request.messages[0]?.content ?? "");
+      if (system.includes("L1 extractor")) {
+        return { content: JSON.stringify([{ text: "User prefers Bun runtime", importance: 4, source_turn_ids: [1] }]), toolCalls: [] };
+      }
+      if (system.includes("L2 Scenario aggregator")) {
+        return { content: "## Runtime choices\n- atom_id=1 User prefers Bun runtime", toolCalls: [] };
+      }
+      return { content: "- scenario_id=1 Prefers Bun runtime\n- atom_id=1 User prefers Bun runtime", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-pipeline-"));
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+    });
+    const pipeline = new PipelineCoordinator(backend, llm);
+
+    await backend.insertConversationTurn({ chatId: "c1", userId: "u1", role: "user", content: "Please use Bun for this bot.", meta: { mode: "chat" } });
+    await pipeline.runMaintenanceForUser("u1", true);
+
+    expect(origins).toEqual(["memory.l1", "memory.l2", "memory.l3"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("lineage links allow conversation targets for generic graph traversal", () => {
   const link: NewLineageLink = {
     userId: "u1",

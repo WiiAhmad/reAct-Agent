@@ -87,6 +87,28 @@ test("parseL15Json accepts continuationTaskId and maps it to selectedTaskId", ()
   });
 });
 
+test("runL15Judgment tags llm-mode calls with memory.l15 origin metadata", async () => {
+  const seenOrigins: string[] = [];
+  const llm: LlmProvider = {
+    async complete(request: any) {
+      seenOrigins.push(request.meta?.origin ?? "missing");
+      return { content: '{"taskCompleted":false,"isLongTask":true,"isContinuation":false}', toolCalls: [] };
+    },
+  };
+
+  await expect(
+    runL15Judgment({
+      latestUserMessage: "implement the runtime logger",
+      historicalTasks: [],
+      llm,
+      mode: "llm",
+      recentMessages: [],
+      maxCanvasChars: 1000,
+    }),
+  ).resolves.toMatchObject({ source: "llm", isLongTask: true });
+  expect(seenOrigins).toEqual(["memory.l15"]);
+});
+
 test("runL15Judgment falls back to short when LLM returns malformed JSON", async () => {
   const llm: LlmProvider = {
     async complete() {

@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import { migrateSqliteMemory } from "../../src/memory/backends/sqlite/migrate";
 import { SqliteMemoryBackend } from "../../src/memory/backends/sqlite/backend";
+import { generateL1EvidenceSummary } from "../../src/memory/offload/l1";
+import { generateL2MermaidPatch } from "../../src/memory/offload/l2";
+import { generateL4Skill } from "../../src/memory/offload/l4";
 import { OffloadService } from "../../src/memory/offload/service";
 
 const noopLlm = {
@@ -22,6 +25,66 @@ function offloadOptions(input: { offloadMinChars: number; offloadSummaryChars: n
     jsonlEnabled: false,
   };
 }
+
+test("offload helpers tag provider calls with helper-specific origin metadata", async () => {
+  const origins: string[] = [];
+  const llm = {
+    async complete(request: any) {
+      origins.push(request.meta?.origin ?? "missing");
+      const system = String(request.messages[0]?.content ?? "");
+      if (system.includes("semantic L1 evidence summary")) {
+        return { content: JSON.stringify({ summary: "semantic summary", score: 5 }), toolCalls: [] };
+      }
+      if (system.includes("Mermaid task canvases")) {
+        return {
+          content: JSON.stringify({
+            fileAction: "replace",
+            mmdContent: null,
+            replaceBlocks: [{ startLine: 2, endLine: 2, content: "  A[Start] --> B[Done]" }],
+            nodeMapping: { node_1: "A" },
+          }),
+          toolCalls: [],
+        };
+      }
+      return {
+        content: JSON.stringify({
+          skillName: "demo-skill",
+          skillDescription: "Demo",
+          skillContent: "# Demo Skill\n\nDo the thing.\n",
+        }),
+        toolCalls: [],
+      };
+    },
+  };
+
+  await expect(generateL1EvidenceSummary(llm as any, {
+    toolName: "demo_tool",
+    toolCallId: "call-1",
+    args: { city: "Bandung" },
+    rawResult: "x".repeat(120),
+    maxSummaryChars: 80,
+    defaultScore: 5,
+  })).resolves.toEqual({ summary: "semantic summary", score: 5 });
+
+  await expect(generateL2MermaidPatch(llm as any, {
+    taskLabel: "demo-task",
+    currentMmd: "graph TD\n  A[Start]\n",
+    entries: [{ nodeId: "node_1", toolName: "demo_tool", summary: "Done", score: 5, createdAt: "2026-05-20T00:00:00.000Z" }],
+    maxCanvasChars: 1000,
+  })).resolves.toEqual(expect.objectContaining({ fileAction: "replace" }));
+
+  await expect(generateL4Skill(llm as any, {
+    taskId: 1,
+    mmdFilename: "memory/task-canvases/c1/task-1.mmd",
+    mmdContent: "graph TD\n  A[Start] --> B[Done]\n",
+    offloadEntries: [],
+    skillFocus: null,
+    maxCanvasChars: 1000,
+    maxSkillChars: 4000,
+  })).resolves.toEqual(expect.objectContaining({ skillName: "demo-skill" }));
+
+  expect(origins).toEqual(["offload.l1", "offload.l2", "offload.l4"]);
+});
 
 test("offload writes refs and nodes without updating a canvas when no taskId is provided", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "grammy-offload-"));

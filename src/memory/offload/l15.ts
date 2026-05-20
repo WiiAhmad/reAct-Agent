@@ -115,6 +115,7 @@ export async function runL15Judgment(input: L15RunInput): Promise<L15JudgmentRes
       messages: buildPrompt(input),
       tools: [],
       temperature: 0,
+      meta: { origin: "memory.l15" },
     });
     return parseL15Json(response.content) ?? fallbackResult;
   } catch {

@@ -161,7 +161,7 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
       toolCount: tools.length,
     });
 
-    const response = await input.llm.complete({ messages, tools });
+    const response = await input.llm.complete({ messages, tools, meta: { origin: "agent" } });
     final = response.content || final;
 
     logAgentEvent(input.trace, "response.received", {

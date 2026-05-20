@@ -8,6 +8,7 @@ import { AutonomousJobService, type AutonomousJobRow } from "../services/autonom
 import { MemoryUpdateSettingsService } from "../services/memory-update-settings";
 import type { ToolRegistry } from "../tools/registry";
 import { emitTrace } from "../logging/helpers";
+import { runWithLlmRequestContext } from "../logging/llm-request-context";
 import type { RuntimeTraceEmitter } from "../logging/types";
 import { splitTelegramMessage, truncateText } from "../utils/text";
 import { type BotContext } from "./context";
@@ -261,35 +262,42 @@ export function createTelegramBot(deps: BotDeps) {
 
     const chatId = resolveChatId(ctx);
     const userId = resolveUserId(ctx);
-    logTelegramEvent("message:received", {
-      chatId,
-      userId,
-      text: truncateText(text, 200),
-      length: text.length,
-    });
-    await ctx.replyWithChatAction("typing");
-
-    const answer = await runReactAgent({
-      chatId,
-      userId,
-      input: text,
-      memory: deps.memory,
-      registry: deps.registry,
-      llm: deps.llm,
-      mode: "chat",
+    await runWithLlmRequestContext({
       trace: deps.trace,
-    });
-
-    logTelegramEvent("message:answered", {
+      requestType: "telegram_message",
       chatId,
       userId,
-      answerLength: answer.length,
-      answerPreview: truncateText(answer, 200),
-    });
+    }, async () => {
+      logTelegramEvent("message:received", {
+        chatId,
+        userId,
+        text: truncateText(text, 200),
+        length: text.length,
+      });
+      await ctx.replyWithChatAction("typing");
 
-    for (const chunk of splitTelegramMessage(answer)) {
-      await ctx.reply(chunk);
-    }
+      const answer = await runReactAgent({
+        chatId,
+        userId,
+        input: text,
+        memory: deps.memory,
+        registry: deps.registry,
+        llm: deps.llm,
+        mode: "chat",
+        trace: deps.trace,
+      });
+
+      logTelegramEvent("message:answered", {
+        chatId,
+        userId,
+        answerLength: answer.length,
+        answerPreview: truncateText(answer, 200),
+      });
+
+      for (const chunk of splitTelegramMessage(answer)) {
+        await ctx.reply(chunk);
+      }
+    });
   });
 
   bot.catch((err) => {

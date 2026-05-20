@@ -24,6 +24,9 @@ export type LlmCompleteRequest = {
   messages: AgentMessage[];
   tools: ToolDefinition[];
   temperature?: number;
+  meta?: {
+    origin?: string;
+  };
 };
 
 export type LlmCompleteResponse = {

@@ -12,6 +12,7 @@ import { describeSchedule, normalizeSchedule } from "../services/schedules";
 import type { BotContext } from "../bot/context";
 import type { ToolRegistry } from "../tools/registry";
 import { emitTrace } from "../logging/helpers";
+import { runWithLlmRequestContext } from "../logging/llm-request-context";
 import type { RuntimeTraceEmitter } from "../logging/types";
 import { splitTelegramMessage, truncateText } from "../utils/text";
 import { unixNow } from "../utils/time";
@@ -156,58 +157,66 @@ export async function runOneAutonomousJob(input: AutonomousRunInput) {
     payload: { nowUnix: now, jobType: input.job.jobType, runCount: input.job.runCount },
   });
 
-  try {
-    if (input.job.jobType === "hybrid" && input.job.messageText.trim()) {
-      const sent = await sendTelegramText(input.bot, input.job.chatId, input.job.messageText, `Failed to send hybrid job text #${input.job.id}`);
-      if (!sent) throw new Error(`Failed to send hybrid job text #${input.job.id}`);
+  return runWithLlmRequestContext({
+    trace: input.trace,
+    requestType: "autonomous_job",
+    chatId: input.job.chatId,
+    userId: input.job.userId,
+    jobId: String(input.job.id),
+  }, async () => {
+    try {
+      if (input.job.jobType === "hybrid" && input.job.messageText.trim()) {
+        const sent = await sendTelegramText(input.bot, input.job.chatId, input.job.messageText, `Failed to send hybrid job text #${input.job.id}`);
+        if (!sent) throw new Error(`Failed to send hybrid job text #${input.job.id}`);
+      }
+
+      const agentPrompt = input.job.jobType === "hybrid" && input.job.agentPrompt.trim() ? input.job.agentPrompt : input.job.prompt;
+      const answer = await (input.runAgent ?? runReactAgent)({
+        chatId: input.job.chatId,
+        userId: input.job.userId,
+        input: `[AUTONOMOUS_JOB #${input.job.id}] ${agentPrompt}`,
+        memory: input.memory,
+        registry: input.registry,
+        llm: input.llm,
+        mode: "autonomous",
+        trace: input.trace,
+      });
+
+      const text = `🤖 Autonomous job #${input.job.id}\n\n${truncateText(answer, 3500)}`;
+      const sent = await sendTelegramText(input.bot, input.job.chatId, text, `Failed to send autonomous job #${input.job.id}`);
+      if (!sent) throw new Error(`Failed to send autonomous job #${input.job.id}`);
+
+      jobService.markRunFinished(input.job.id, finishedAt, "success", null);
+      const completion = jobService.recordSuccessfulRun(input.job.id);
+      emitTrace(input.trace, {
+        minLevel: 1,
+        source: "autonomous",
+        event: "job.complete",
+        chatId: input.job.chatId,
+        userId: input.job.userId,
+        jobId: String(input.job.id),
+        payload: { finishedAtUnix: finishedAt, answerLength: answer.length, deleted: completion.deleted, runCount: completion.runCount },
+      });
+
+      return { job: completion.job, answer, deleted: completion.deleted, runCount: completion.runCount };
+    } catch (error) {
+      const message = toErrorMessage(error);
+      jobService.markRunFinished(input.job.id, finishedAt, "error", message);
+      emitTrace(input.trace, {
+        minLevel: 1,
+        source: "autonomous",
+        event: "job.error",
+        chatId: input.job.chatId,
+        userId: input.job.userId,
+        jobId: String(input.job.id),
+        payload: { finishedAtUnix: finishedAt },
+        error,
+      });
+      const failureText = `🤖 Autonomous job #${input.job.id} failed\n\n${truncateText(message, 3500)}`;
+      await sendTelegramText(input.bot, input.job.chatId, failureText, `Failed to send autonomous job failure #${input.job.id}`);
+      throw error;
     }
-
-    const agentPrompt = input.job.jobType === "hybrid" && input.job.agentPrompt.trim() ? input.job.agentPrompt : input.job.prompt;
-    const answer = await (input.runAgent ?? runReactAgent)({
-      chatId: input.job.chatId,
-      userId: input.job.userId,
-      input: `[AUTONOMOUS_JOB #${input.job.id}] ${agentPrompt}`,
-      memory: input.memory,
-      registry: input.registry,
-      llm: input.llm,
-      mode: "autonomous",
-      trace: input.trace,
-    });
-
-    const text = `🤖 Autonomous job #${input.job.id}\n\n${truncateText(answer, 3500)}`;
-    const sent = await sendTelegramText(input.bot, input.job.chatId, text, `Failed to send autonomous job #${input.job.id}`);
-    if (!sent) throw new Error(`Failed to send autonomous job #${input.job.id}`);
-
-    jobService.markRunFinished(input.job.id, finishedAt, "success", null);
-    const completion = jobService.recordSuccessfulRun(input.job.id);
-    emitTrace(input.trace, {
-      minLevel: 1,
-      source: "autonomous",
-      event: "job.complete",
-      chatId: input.job.chatId,
-      userId: input.job.userId,
-      jobId: String(input.job.id),
-      payload: { finishedAtUnix: finishedAt, answerLength: answer.length, deleted: completion.deleted, runCount: completion.runCount },
-    });
-
-    return { job: completion.job, answer, deleted: completion.deleted, runCount: completion.runCount };
-  } catch (error) {
-    const message = toErrorMessage(error);
-    jobService.markRunFinished(input.job.id, finishedAt, "error", message);
-    emitTrace(input.trace, {
-      minLevel: 1,
-      source: "autonomous",
-      event: "job.error",
-      chatId: input.job.chatId,
-      userId: input.job.userId,
-      jobId: String(input.job.id),
-      payload: { finishedAtUnix: finishedAt },
-      error,
-    });
-    const failureText = `🤖 Autonomous job #${input.job.id} failed\n\n${truncateText(message, 3500)}`;
-    await sendTelegramText(input.bot, input.job.chatId, failureText, `Failed to send autonomous job failure #${input.job.id}`);
-    throw error;
-  }
+  });
 }
 
 export async function runOneMemoryUpdateNow(input: MemoryUpdateRunNowInput) {
@@ -224,42 +233,48 @@ export async function runOneMemoryUpdateNow(input: MemoryUpdateRunNowInput) {
     startedAtUnix: now,
   });
 
-  try {
-    const maintenanceResult = await input.memory.runMaintenanceForUser(input.userId, true, {
-      source,
-      onProgress: (event) => reportMemoryUpdateProgress(input.onProgress, event),
-    });
-    const finishedAt = input.finishedUnix ?? unixNow();
-    const finished = input.settings.markRunFinished(input.userId, finishedAt, "success", null);
-    await reportMemoryUpdateProgress(input.onProgress, {
-      source,
-      userId: input.userId,
-      stage: "run",
-      status: "complete",
-      startedAtUnix: now,
-      finishedAtUnix: finishedAt,
-      durationMs: Date.now() - startedAtMs,
-      createdAtoms: maintenanceResult.l1Created,
-      scenarioId: maintenanceResult.l2ScenarioId,
-      personaUpdated: maintenanceResult.personaUpdated,
-    });
-    return { settings: finished, maintenanceResult };
-  } catch (error) {
-    const message = toErrorMessage(error);
-    const finishedAt = input.finishedUnix ?? unixNow();
-    input.settings.markRunFinished(input.userId, finishedAt, "error", message);
-    await reportMemoryUpdateProgress(input.onProgress, {
-      source,
-      userId: input.userId,
-      stage: "run",
-      status: "error",
-      startedAtUnix: now,
-      finishedAtUnix: finishedAt,
-      durationMs: Date.now() - startedAtMs,
-      error: message,
-    });
-    throw error;
-  }
+  return runWithLlmRequestContext({
+    trace: input.trace,
+    requestType: "memory_update",
+    userId: input.userId,
+  }, async () => {
+    try {
+      const maintenanceResult = await input.memory.runMaintenanceForUser(input.userId, true, {
+        source,
+        onProgress: (event) => reportMemoryUpdateProgress(input.onProgress, event),
+      });
+      const finishedAt = input.finishedUnix ?? unixNow();
+      const finished = input.settings.markRunFinished(input.userId, finishedAt, "success", null);
+      await reportMemoryUpdateProgress(input.onProgress, {
+        source,
+        userId: input.userId,
+        stage: "run",
+        status: "complete",
+        startedAtUnix: now,
+        finishedAtUnix: finishedAt,
+        durationMs: Date.now() - startedAtMs,
+        createdAtoms: maintenanceResult.l1Created,
+        scenarioId: maintenanceResult.l2ScenarioId,
+        personaUpdated: maintenanceResult.personaUpdated,
+      });
+      return { settings: finished, maintenanceResult };
+    } catch (error) {
+      const message = toErrorMessage(error);
+      const finishedAt = input.finishedUnix ?? unixNow();
+      input.settings.markRunFinished(input.userId, finishedAt, "error", message);
+      await reportMemoryUpdateProgress(input.onProgress, {
+        source,
+        userId: input.userId,
+        stage: "run",
+        status: "error",
+        startedAtUnix: now,
+        finishedAtUnix: finishedAt,
+        durationMs: Date.now() - startedAtMs,
+        error: message,
+      });
+      throw error;
+    }
+  });
 }
 
 export function startAutonomousLoop(deps: AutonomousDeps) {

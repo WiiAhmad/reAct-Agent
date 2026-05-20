@@ -98,6 +98,54 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
   }
 }, 20000);
 
+test("runReactAgent tags provider calls with agent origin metadata", async () => {
+  const seenOrigins: string[] = [];
+  const llm = {
+    async complete(request: any) {
+      seenOrigins.push(request.meta?.origin ?? "missing");
+      return { content: "Done.", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: false,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+      },
+    });
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await runReactAgent({ chatId: "c1", userId: "u1", input: "hello", memory, registry, llm: llm as any, mode: "chat" });
+
+    expect(seenOrigins).toEqual(["agent"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}, 20000);
+
 test("agent runtime emits trace events and tags memory-aware flow", async () => {
   const llmCalls: Array<Array<{ role: string; content?: string }>> = [];
   const llm = {

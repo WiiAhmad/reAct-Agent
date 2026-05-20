@@ -6,6 +6,7 @@ import { resetActiveMemoryUpdateRunsForTest } from "../../src/bot/conversations/
 import { renderMainMenuScreen } from "../../src/bot/ui/renderers";
 import { config } from "../../src/config";
 import { uiCallbacks } from "../../src/bot/ui/keyboards";
+import { TracedLlmProvider } from "../../src/agent/providers/traced";
 
 type ApiCall = { method: string; payload: Record<string, unknown> };
 
@@ -29,7 +30,12 @@ const baseJob = {
   scheduleLabel: "10m",
 };
 
-function createBotHarness(options: { trace?: { emit: (event: RuntimeTraceInput) => void } } = {}) {
+function createBotHarness(
+  options: {
+    trace?: { emit: (event: RuntimeTraceInput) => void };
+    failSendMessageText?: string;
+  } = {},
+) {
   resetActiveMemoryUpdateRunsForTest();
   config.telegram.botToken = "12345:test-token";
   const jobs = [{ ...baseJob }];
@@ -40,6 +46,9 @@ function createBotHarness(options: { trace?: { emit: (event: RuntimeTraceInput) 
       return { id: 12345, is_bot: true, first_name: "Test Bot", username: "test_bot" };
     }
     if (method === "sendMessage") {
+      if (options.failSendMessageText && payload.text === options.failSendMessageText) {
+        throw new Error("telegram down");
+      }
       return { message_id: apiCalls.length, date: 1, chat: { id: payload.chat_id, type: "private" }, text: payload.text };
     }
     if (method === "answerCallbackQuery") {
@@ -150,9 +159,13 @@ function createBotHarness(options: { trace?: { emit: (event: RuntimeTraceInput) 
     registry: {
       list: () => [],
     },
-    llm: {
+    llm: new TracedLlmProvider({
       complete: async () => ({ content: "agent answer", toolCalls: [] }),
-    },
+    }, {
+      provider: "openai",
+      model: "gpt-test",
+      trace: options.trace,
+    }),
     trace: options.trace,
   };
 
@@ -238,6 +251,45 @@ test("plain Telegram messages pass runtime trace into agent execution", async ()
     (event.payload as { input?: string } | undefined)?.input === "hello agent"
   )).toBe(true);
   expect(apiCalls.some((call) => call.method === "sendMessage" && call.payload.text === "agent answer")).toBe(true);
+});
+
+test("plain Telegram messages emit one llm request summary", async () => {
+  const events: RuntimeTraceInput[] = [];
+  const { bot } = createBotHarness({ trace: { emit: (event) => events.push(event) } });
+
+  await sendText(bot, 30, "hello agent");
+
+  const summaries = events.filter((event) => event.source === "llm" && event.event === "request.summary");
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toEqual(expect.objectContaining({
+    requestType: "telegram_message",
+    chatId: "99",
+    userId: "42",
+    payload: expect.objectContaining({ llmCallCount: 1, byOrigin: { agent: 1 } }),
+  }));
+});
+
+test("Telegram reply failure still emits one llm request summary", async () => {
+  const events: RuntimeTraceInput[] = [];
+  const { bot } = createBotHarness({
+    trace: { emit: (event) => events.push(event) },
+    failSendMessageText: "agent answer",
+  });
+
+  await expect(sendText(bot, 31, "hello agent")).rejects.toThrow("telegram down");
+
+  const summaries = events.filter((event) => event.source === "llm" && event.event === "request.summary");
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toEqual(expect.objectContaining({
+    requestType: "telegram_message",
+    chatId: "99",
+    userId: "42",
+    payload: expect.objectContaining({
+      outcome: "error",
+      llmCallCount: 1,
+      byOrigin: { agent: 1 },
+    }),
+  }));
 });
 
 const passThroughScenarios: Array<{

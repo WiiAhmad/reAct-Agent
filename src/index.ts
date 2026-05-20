@@ -49,7 +49,7 @@ async function main() {
     console.log("Runtime config", runtimeConfigSummary);
   }
 
-  const llm = createLlmProvider();
+  const llm = createLlmProvider(runtimeTrace);
   const memory = await createMemoryService(db, llm, {
     storage: {
       dataDir: config.storage.dataDir,

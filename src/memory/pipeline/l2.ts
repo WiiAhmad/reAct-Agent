@@ -50,6 +50,7 @@ export async function runL2Pipeline(
       { role: "user", content: buildAtomDigest(atoms) },
     ],
     tools: [],
+    meta: { origin: "memory.l2" },
   });
 
   const title = `Scenario snapshot ${new Date().toISOString()}`;

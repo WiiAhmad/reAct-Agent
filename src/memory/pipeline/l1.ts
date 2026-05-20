@@ -135,6 +135,7 @@ export async function runL1Pipeline(
       { role: "user", content: buildTranscript(turns) },
     ],
     tools: [],
+    meta: { origin: "memory.l1" },
   });
 
   const parsed = parseExtractions(response.content);
