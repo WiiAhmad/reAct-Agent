@@ -173,7 +173,7 @@ test("agent runtime emits trace events and tags memory-aware flow", async () => 
   }
 }, 20000);
 
-test("agent runtime keeps tdai_create_job hidden for unrelated follow-up chat turns", async () => {
+test("agent runtime keeps tdai_create_job available for unrelated follow-up chat turns", async () => {
   let seenTools: string[] = [];
   const llm = {
     async complete({ tools }: { tools: Array<{ name: string }> }) {
@@ -219,7 +219,7 @@ test("agent runtime keeps tdai_create_job hidden for unrelated follow-up chat tu
 
     await runReactAgent({ chatId: "c1", userId: "u1", input: "siapa nama kamu", memory, registry, llm: llm as any, mode: "chat" });
 
-    expect(seenTools).not.toContain("tdai_create_job");
+    expect(seenTools).toContain("tdai_create_job");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -269,6 +269,63 @@ test("agent runtime keeps tdai_create_job available for reminder requests", asyn
     await runReactAgent({ chatId: "c1", userId: "u1", input: "ingatkan saya 4 menit kedepan untuk meeting", memory, registry, llm: llm as any, mode: "chat" });
 
     expect(seenTools).toContain("tdai_create_job");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}, 20000);
+
+test("agent runtime keeps tdai_create_job available for reminder clarification turns", async () => {
+  const seenToolsByInput = new Map<string, string[]>();
+  const llm = {
+    async complete({ messages, tools }: { messages: Array<{ role: string; content?: string }>; tools: Array<{ name: string }> }) {
+      const latestUser = [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
+      seenToolsByInput.set(latestUser, tools.map((tool) => tool.name));
+      return { content: "Siap.", toolCalls: [] };
+    },
+  };
+
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-agent-runtime-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrate(db);
+    const memory = await createMemoryService(db, llm as any, {
+      storage: {
+        dataDir: tempDir,
+        memoryRefsDir: join(tempDir, "memory", "refs"),
+        memoryCanvasDir: join(tempDir, "memory", "canvases"),
+        memoryJsonlExportDir: join(tempDir, "memory", "jsonl"),
+        historyDir: join(tempDir, "history"),
+        memoryTaskCanvasDir: join(tempDir, "memory", "task-canvases"),
+        memoryGeneratedSkillsDir: join(tempDir, "memory", "skills"),
+      },
+      memory: {
+        maintenanceCron: "*/10 * * * *",
+        offloadEnabled: true,
+        offloadMinChars: 2500,
+        offloadSummaryChars: 900,
+        sqliteVecEnabled: true,
+        jsonlExportEnabled: false,
+        l15: { enabled: true, mode: "rules", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
+        l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },
+        l2: { enabled: false, mode: "local", triggerMinEntries: 1, maxCanvasChars: 12000 },
+        taskRecall: { enabled: true, maxTasks: 3, maxCanvasChars: 2200 },
+        l4: { enabled: true, mode: "local", requireCompletedTask: false, maxEvidenceEntries: 80, maxCanvasChars: 20000, maxSkillChars: 20000 },
+      },
+    });
+    const registry = new ToolRegistry(db);
+    registry.registerMany(createLocalTools(memory));
+
+    await memory.logUserMessage({ chatId: "c1", userId: "u1", content: "ingatkan saya untuk meeting", mode: "chat" });
+    await memory.logAssistantMessage({ chatId: "c1", userId: "u1", content: "Ini pengingatnya sekali saja atau berulang? Meetingnya kapan?" });
+
+    for (const followUp of ["jam 5", "sekali saja", "besok jam 5"]) {
+      await runReactAgent({ chatId: "c1", userId: "u1", input: followUp, memory, registry, llm: llm as any, mode: "chat" });
+    }
+
+    expect(seenToolsByInput.get("jam 5")).toContain("tdai_create_job");
+    expect(seenToolsByInput.get("sekali saja")).toContain("tdai_create_job");
+    expect(seenToolsByInput.get("besok jam 5")).toContain("tdai_create_job");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
