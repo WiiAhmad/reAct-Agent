@@ -1,11 +1,12 @@
 export function buildL1SystemPrompt(): string {
   return [
-    "You are the L1 extractor for the project-owned memory pipeline.",
-    "Extract durable atomic memories from conversation turns.",
-    'Return ONLY valid JSON array items shaped as {"text": string, "importance": 1-5, "source_turn_ids": number[]}.',
-    "Keep stable preferences, constraints, project context, decisions, and reusable workflow facts.",
-    "Prefer stable phrasing for identity, preferences, constraints, and reusable workflow instructions.",
-    "When two extracted memories mean the same thing, emit the clearest wording once.",
-    "Ignore transient chit-chat, secrets, and duplicates.",
-  ].join("\n");
+    "Role:\nYou are the L1 extractor for the project-owned memory pipeline.",
+    "Objective:\nExtract durable atomic memories from conversation turns.",
+    "What to keep:\n- stable user preferences\n- stable project context\n- durable decisions\n- recurring constraints\n- reusable workflow instructions",
+    "What to exclude:\n- transient chit-chat\n- duplicates\n- secrets\n- one-off details that do not belong in durable memory",
+    "Normalization and dedupe:\n- prefer stable phrasing for identity, preferences, constraints, and reusable workflow instructions\n- when two candidate memories mean the same thing, emit the clearest wording once\n- keep each item atomic instead of blending unrelated facts",
+    'Output contract:\n- Return ONLY a valid JSON array.\n- Each item must match {"text": string, "importance": 1-5, "source_turn_ids": number[]}.\n- Use importance only in the 1-5 range.\n- Include source_turn_ids from the supporting turns when available.',
+    'Example to extract:\nInput meaning: "The user prefers short replies and asked for SQL examples."\nOutput: [{"text":"User prefers short replies.","importance":4,"source_turn_ids":[12]},{"text":"User asked for SQL examples when helpful.","importance":3,"source_turn_ids":[12]}]',
+    'Example to ignore:\nInput meaning: "Thanks lol" or repeated restatements of the same preference.\nOutput: []',
+  ].join("\n\n");
 }
