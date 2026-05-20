@@ -1,84 +1,95 @@
 # Architecture
 
-This project is a Telegram AI agent running on Bun with a menu-driven grammY UI.
+This document is the contributor-facing map of the runtime.
 
-## Runtime layers
+Use it to understand the major subsystem boundaries, the two main execution flows, and which deeper doc owns each area.
 
-- `src/index.ts` bootstraps the application.
-- `src/bot/bot.ts` wires grammY, conversations, menus, and commands.
-- `src/agent/react-agent.ts` runs the ReAct-style agent loop.
-- `src/agent/prompts/system.ts` owns the extracted system prompt.
-- `src/services/` owns persistence-backed business logic for memory updates and autonomous jobs.
-- `src/cron/scheduler.ts` dispatches due autonomous work.
-- `src/tools/local.ts` exposes internal tools to the agent.
-- `src/db/schema.ts` defines the SQLite schema.
+## Runtime in one view
 
-## Interaction model
+This project is a Bun-based Telegram AI agent built around:
 
-The public Telegram surface is intentionally small:
+- a grammY bot with menu/callback/conversation flows
+- a ReAct-style agent loop
+- a project-owned memory runtime backed by SQLite and JSONL history
+- a unified scheduler that runs autonomous jobs and Memory Update work
 
-- `/start`
-- `/menu`
-- `/help`
+`src/index.ts` is the integration point that wires the runtime together.
 
-Everything else is handled through inline buttons and conversations from `@grammyjs/conversations`.
+## Major runtime layers
 
-That gives the bot deterministic multi-step flows for memory updates, job creation, job editing, and nested navigation without falling back to a command-heavy interface.
+### Bootstrap and runtime wiring
 
-## Responsibility boundaries
+`src/index.ts` initializes the DB, LLM provider, memory service, tool registry, Telegram bot, local tools, and unified scheduler.
 
-### Bot layer
+### Telegram transport and UI
 
-The bot layer should only handle Telegram transport concerns:
+`src/bot/bot.ts` owns the public command surface, menus, callback routing, and conversation entrypoints. It should stay focused on Telegram transport and UI coordination.
 
-- receiving messages and callback queries
-- rendering menus and summaries
-- entering conversations
-- forwarding requests to services
+### Agent loop
 
-### Service layer
+`src/agent/react-agent.ts` owns task judgment, recent-context loading, layered recall, tool execution, and tool-result offload during agent runs.
 
-The service layer should own stateful application logic:
+### Services and scheduling
 
-- autonomous job persistence and lifecycle updates
-- per-user memory update settings
-- schedule summaries and validation
-- execution bookkeeping
+`src/services/*` owns persistent job and Memory Update settings. `src/cron/scheduler.ts` owns due-work dispatch across autonomous jobs and Memory Update runs.
 
-### Scheduler layer
+### Memory runtime
 
-The scheduler is a dispatcher, not a user-facing schedule source.
+`src/memory/*` owns durable memory maintenance, task/context offload, recall, interaction logging, refs, task canvases, and draft skill generation.
 
-It wakes on an internal tick, reads due work from SQLite, and executes items whose own schedule says they are ready. This keeps scheduling logic centralized while allowing each job or user setting to keep its own cadence.
+### Persistence and diagnostics
 
-### Agent layer
+SQLite stores structured runtime state, while JSONL stores canonical chat history and optional memory/export artifacts. Logging and runtime traces sit alongside those storage surfaces.
 
-The agent uses a separate prompt module and internal tools. The prompt stays focused on behavior, while orchestration remains in `react-agent.ts`.
+## Main execution flows
 
-An internal current datetime tool is available so the agent can answer time-sensitive questions accurately instead of guessing.
+### Inbound Telegram message flow
 
-## Context offload pipeline
+1. Telegram delivers a message or callback to the bot layer.
+2. The bot routes the interaction into a screen update, conversation, or agent run.
+3. The agent logs the turn, runs task judgment, loads recent context and layered recall, and executes tools as needed.
+4. Tool results are summarized or offloaded through the memory runtime before the agent continues.
+5. The bot sends the final Telegram response.
 
-The context-offload path is intentionally separate from durable memory maintenance. Durable memory continues to maintain L0 conversations, L1 atoms, L2 scenarios, and L3 persona through the Memory Update workflow.
+The public command surface stays intentionally small: `/start`, `/menu`, and `/help`. The rest of the user-visible behavior lives behind menus, callbacks, and conversations.
 
-Context offload handles high-volume working context:
+### Scheduler-driven background flow
 
-- L1.5 task judgment classifies whether a turn should attach to a long-running task, continue an existing task, complete one, or stay short-term only.
-- task-scoped L2 Mermaid canvas files summarize evidence for active tasks without rewriting durable scenarios.
-- L4 draft skill generation turns reviewed task canvases and linked evidence into project-local draft skills through menu/review flows.
+1. The unified scheduler wakes on its internal tick.
+2. It selects due autonomous jobs up to the per-tick capacity.
+3. It runs those jobs first.
+4. It spends any remaining capacity on due Memory Update users.
+5. Both paths write status and timestamps back to persistent state.
 
-```text
-chat turn/tool result
--> canonical chat JSONL (data/history/<chatId>.jsonl)
--> L1 semantic evidence summary (SQLite + JSONL)
--> L1.5 task judgment
--> L2 semantic Mermaid patch (.mmd + SQLite FTS)
--> task-aware recall
--> optional L4 draft skill generation
-```
+## Persistence and storage surfaces
 
-## Data ownership
+- SQLite is the structured source of truth for jobs, Memory Update settings, memory indexes, task state, and recall-related records.
+- `data/history/<chatId>.jsonl` is the canonical per-chat transcript history.
+- offloaded raw tool output is stored as refs.
+- task-scoped working context is stored as task canvases.
+- generated draft skills are written to project storage and remain reviewable artifacts until a user handles them explicitly.
 
-All durable state is stored in the project-owned backend. The runtime no longer depends on the old vendor-specific memory workflow for its primary behavior.
+## Terminology map
 
-The README and memory docs describe the protected memory model in the current project terms: L0 conversations, L1 atoms, L2 scenarios, L3 persona, offload refs, and the Mermaid canvas.
+- **unified scheduler** — the scheduler loop in `src/cron/scheduler.ts`
+- **autonomous jobs** — scheduled background jobs stored per job record
+- **Memory Update** — the Telegram-managed durable-memory maintenance workflow
+- **durable memory** — the protected L0/L1/L2/L3 semantic model
+- **task/context offload** — the operational path for L1 evidence, L1.5 task judgment, task canvases, refs, and L4 draft skills
+- **public command surface** — `/start`, `/menu`, and `/help`
+- **menu/callback/conversation flows** — the button-driven grammY interaction model used for multi-step UI behavior
+
+## Relevant code
+
+- `src/index.ts`
+- `src/bot/bot.ts`
+- `src/agent/react-agent.ts`
+- `src/cron/scheduler.ts`
+- `src/memory/integration/factory.ts`
+- `src/db/schema.ts`
+
+## Where to read next
+
+- `docs/autonomous-jobs.md` — job model, schedule model, and unified scheduler behavior
+- `docs/memory.md` — durable memory, task/context offload, recall, and Memory Update boundaries
+- `docs/telegram-flow.md` — menus, callbacks, conversations, and Telegram UX boundaries

@@ -1,79 +1,153 @@
 # Memory
 
-This project uses a project-owned memory backend with a protected layered model.
+This document explains the memory runtime boundaries for contributors.
 
-## Protected model boundary
+The most important rule is that the runtime has two parallel systems with different purposes:
 
-The memory model is unchanged and must remain as-is:
+- **durable memory** for long-lived semantic understanding
+- **task/context offload** for operational working context during long or noisy tasks
 
-- L0 conversations
-- L1 atoms
-- L2 scenarios
-- L3 persona
-- offload refs
-- task-scoped Mermaid canvases
+## Protected boundary
 
-The durable memory path remains L0 -> L1 -> L2 -> L3. Those layers keep their existing meanings and responsibilities.
+The durable semantic meanings of L0, L1, L2, and L3 are protected. Future runtime changes may evolve storage, recall, or offload mechanics around those layers, but they should not casually redefine the durable model.
 
-The context-offload path is separate from durable memory maintenance:
+## Core mental model
 
-`offload L1 evidence summaries -> L1.5 task judgment -> task-scoped L2 Mermaid canvas -> L4 draft skill generation`
+```text
+conversation + tool activity
+├─ durable memory path
+│  └─ L0 conversations -> L1 atoms -> L2 scenarios -> L3 persona
+└─ task/context offload path
+   └─ L1 evidence -> L1.5 task judgment -> task canvas + refs -> task-aware recall -> optional L4 draft skills
+```
 
-L1.5 decides whether a turn belongs to a long-running task, continues an existing task, closes one, or should stay short-term only. Task-scoped L2 Mermaid canvases summarize evidence for active tasks without changing durable L1/L2/L3 maintenance semantics.
+These are parallel systems with different jobs, not one long numbered ladder.
 
-### TencentDB-style semantic offload completion
+## Durable memory layers
 
-Short-term task context now uses four inspectable layers:
+### L0 conversations
 
-1. **Canonical chat JSONL** stores raw transcript rows in `data/history/<chatId>.jsonl` using `{id, chat_id, user_id, role, content, meta, created_at}`.
-2. **L1 semantic evidence** stores each tool result as a compact progress/blocker/verification summary in SQLite and mirrors it to `data/memory/jsonl/l1/<chat>.jsonl`.
-3. **L2 semantic Mermaid patching** consumes task-routed L1 evidence and writes task-scoped `.mmd` canvases under `data/memory/task-canvases/`.
-4. **Task-aware recall** searches active and historical task canvases and injects relevant Mermaid snippets into the chat context.
+L0 is the conversation-evidence layer. It preserves transcript-level history that later durable layers can build from.
 
-SQLite remains authoritative for memory/offload indexes, while raw chat transcript history is JSONL-only. The durable memory pipeline remains `L0 JSONL conversations -> L1 atoms -> L2 scenarios -> L3 persona`.
+### L1 atoms
 
-## What Memory Update means
+L1 atoms are durable extracted memory units such as stable facts, preferences, constraints, and decisions worth carrying forward.
 
-Memory Update is the Telegram-managed workflow for durable memory maintenance.
+### L2 scenarios
 
-It is not a public slash command.
+L2 scenarios group durable meaning into higher-level contextual clusters rather than isolated facts.
 
-It is accessed from the Telegram menu and can:
+### L3 persona
 
-- run memory maintenance now without blocking the Telegram conversation flow
-- send progress messages while L1, L2, and L3 complete
-- enable or disable automatic updates
-- choose a preset cadence
-- accept a custom cron schedule when needed
-- show status, last run, last result, and last error
+L3 persona is the most distilled durable layer. It captures the slowest-changing high-level understanding of the user and their working patterns.
 
-## Per-user scheduling
+The durable maintenance path is:
 
-Memory Update scheduling is stored per user.
+`L0 conversation evidence -> L1 atoms -> L2 scenarios -> L3 persona`
 
-The default behavior for a new user is:
+Memory Update maintains this path asynchronously. It is not the owner of inline task continuity.
 
-- enabled
-- every 24 hours
+## Task/context offload layers
 
-That makes memory maintenance a Telegram-managed setting rather than a `.env`-driven user-facing behavior.
+### L1 evidence
 
-## Offload refs and task canvases
+L1 evidence is the compact operational summary layer for tool and interaction results. It carries forward progress, blockers, verification signals, and key findings for task continuity.
 
-When the agent offloads heavy tool output, the raw result is stored in an offload ref file.
+This is not the same thing as durable L1 atoms. L1 evidence is about keeping active work legible while a task is still unfolding.
 
-The task-scoped Mermaid canvas provides a compact navigational summary of the active task context. The agent can read the offloaded reference later if it needs the raw details.
+### L1.5 task judgment
 
-short one-shot tool use like current date/time does not update task canvases. These short interactions can answer directly without creating or changing a long-running task canvas.
+L1.5 is a task routing layer. It decides whether a turn starts, continues, completes, or avoids task-scoped context.
 
-Scheduled-task creation through tdai_create_job is also short one-shot tool use unless a longer task context exists.
+This is control logic, not a durable semantic layer.
 
-## L4 draft skills
+### Task canvases
 
-L4 draft skill generation is menu/user-triggered from Skill Drafts. It uses a selected task canvas and linked evidence to write draft skills under project storage.
+Task canvases are structured task-scoped working summaries used for continuity and recall. They are not the same thing as durable L2 scenarios.
 
-L4 does not auto-install globally. A generated skill remains a reviewable draft until a user explicitly handles it outside this pipeline.
+A task canvas exists to preserve working structure for an active or historical task, not to redefine durable long-term meaning.
 
-## Why this matters
+### Refs
 
-The memory runtime can evolve around the edges, but the semantics of the underlying layers must not change. This documentation exists to keep that boundary explicit for future work.
+Refs store raw offloaded detail when a tool result is too heavy to keep inline.
+
+Not every tool result becomes a ref. Smaller results can still produce L1 evidence or task-canvas updates without needing a separate raw-output file.
+
+### L4 draft skills
+
+L4 draft skills are user-triggered, project-local draft artifacts derived from task context. They are not automatically installed runtime behavior.
+
+## Timing model
+
+- task/context offload happens inline during active work
+- durable memory maintenance happens later through Memory Update
+
+This is the difference between operational continuity now and semantic consolidation later.
+
+## Worked example
+
+1. a user starts a longer investigation
+2. the agent runs tools
+3. tool results produce L1 evidence
+4. L1.5 decides whether the turn belongs to a long-running task
+5. the runtime creates or updates a task canvas when appropriate
+6. large tool output is stored as refs while the canvas keeps a compact summary
+7. task-aware recall can later inject active or historical task canvases back into context
+8. Memory Update later distills durable long-term meaning into L1 atoms, L2 scenarios, and L3 persona
+
+## Canonical history, indexes, refs, and canvases
+
+- per-chat JSONL history is the canonical transcript record
+- SQLite stores structured indexes, memory state, task state, and recall-related records
+- refs store heavy raw output
+- task canvases store structured task summaries
+- generated draft skills are reviewable artifacts derived from task context
+
+## Recall behavior
+
+Recall can combine:
+
+- durable persona
+- durable scenarios
+- durable atoms
+- relevant conversation evidence
+- the active task canvas
+- relevant historical task canvases
+
+That means recall is not only a long-term-memory lookup. It can combine durable semantic memory with active or historical task context when a query needs both.
+
+## Memory Update workflow
+
+Memory Update is the Telegram-managed durable-memory maintenance workflow. It can run on demand or on a per-user schedule, and it is responsible for refreshing durable L0/L1/L2/L3 outputs.
+
+When triggered from Telegram, it runs asynchronously and can emit progress or final result messages back to the chat.
+
+## Per-user scheduling semantics
+
+Memory Update scheduling is stored per user and supports `interval` and `cron` modes.
+
+New users default to enabled Memory Update with a 24-hour interval.
+
+## Contributor invariants
+
+- durable L0/L1/L2/L3 semantics are protected
+- L1 atoms are not the same thing as L1 evidence
+- durable L2 scenarios are not the same thing as task canvases
+- L1.5 is a routing layer, not a durable semantic layer
+- refs hold raw detail, not the primary summary
+- Memory Update maintains durable memory, not task continuity semantics
+- L4 draft skills remain drafts until explicitly handled by the user
+
+## Relevant code
+
+- `src/memory/integration/factory.ts`
+- `src/memory/core/service.ts`
+- `src/memory/recall/service.ts`
+- `src/memory/offload/l15.ts`
+- `src/agent/react-agent.ts`
+- `src/bot/conversations/memory-update-runner.ts`
+
+## Related docs
+
+- `docs/architecture.md`
+- `docs/telegram-flow.md`

@@ -81,7 +81,7 @@ export class MemoryUpdateSettingsService {
           last_error,
           created_at,
           updated_at
-        ) VALUES (?, 1, 'interval', 86400, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, 1, 'interval', 21600, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
       )
       .run(userId, now, now);
 

@@ -1,64 +1,92 @@
 # Telegram flow
 
-This bot is designed around Telegram menus, inline buttons, and conversations from `@grammyjs/conversations`.
+This document explains the Telegram-facing control surface of the runtime.
 
-## Public commands
+Use `docs/architecture.md` for the system map. This file owns the command, menu, callback, and conversation boundaries.
 
-- `/start` - onboarding entry point
-- `/menu` - open the main menu
-- `/help` - explain the runtime and navigation
+## Public command surface
 
-## Main user journeys
+The public Telegram commands are:
 
-### Start flow
+- `/start`
+- `/menu`
+- `/help`
 
-`/start` welcomes the user and points them toward the menu and help.
+Everything else should be treated as menu/callback/conversation behavior rather than part of a larger public slash-command API.
 
-### Menu flow
+## Commands vs menus vs conversations
 
-`/menu` opens the main navigation hub.
+- commands open entry points
+- menus provide navigation and screen selection
+- callbacks trigger actions or route into deeper flows
+- conversations handle multi-step input safely
 
-Typical sections:
+This keeps the Telegram surface small while still supporting richer flows such as schedule changes, confirmations, and draft generation.
+
+## Main menu journeys
+
+The main menu itself currently exposes:
 
 - Memory
 - Jobs
 - Help
 
-The menu is the preferred way to reach the rest of the runtime.
+From the Memory summary, users can continue into:
 
-### Help flow
+- Memory Update
+- Skill Drafts
 
-`/help` explains the simplified public command surface and how to use the button-driven UI.
+That means Skill Drafts is part of the menu-driven UX, but it is nested under the Memory path rather than being a top-level public command.
 
-## Conversations
+## Callback and conversation routing
 
-`@grammyjs/conversations` is used for any flow that needs multiple steps.
+Callbacks are used to move between screens and trigger actions such as opening Memory Update, opening Jobs, refreshing screens, or entering a detail flow.
 
-That includes:
+Conversations are used for flows that need multiple steps, including:
 
-- creating a job
-- editing a job schedule
-- entering a custom cron expression
-- configuring Memory Update
-- confirming destructive actions like delete or disable
+- Memory Update schedule changes
+- asynchronous Memory Update run-now handling
+- job creation
+- job detail editing
+- skill draft generation
 
-Conversations keep these flows structured and replay-safe.
+## Service handoff boundary
 
-## UI principles
+The Telegram layer should stay focused on transport, rendering, and routing.
 
-- prefer buttons over free-form commands
-- keep summaries short and actionable
-- reuse the same labels in the menu and the detail views
-- send the user back to the relevant parent menu after a completed action
+Persistent logic belongs in service and memory layers, not in Telegram UI handlers.
 
-## Callback routing
+In practice, that means bot handlers should present screens, enter conversations, or call into service-backed actions instead of owning job persistence, schedule semantics, or memory-maintenance logic directly.
 
-Inline buttons act as navigation and action triggers.
+## Background-triggered UX updates
 
-The bot should route buttons into the appropriate conversation or service-backed action instead of exposing a larger public command set.
+Some Telegram actions do not finish in a single synchronous screen change.
 
-## What changed from the old UX
+The clearest current example is Memory Update run-now: the callback can trigger background work, and follow-up progress or result messages can arrive later.
 
-The old command-heavy surface is gone.
+This is why the Telegram flow should be understood as both screen navigation and event-triggered messaging.
 
-Users should no longer rely on `/tools`, `/memory_force`, `/job <prompt>`, or `/jobs` as the primary interaction model. Those behaviors now live behind menus and conversations.
+## UI principles for contributors
+
+- keep the public command surface small
+- prefer menus and callbacks over new public commands
+- use conversations for multi-step or confirmation-heavy flows
+- keep Telegram handlers thin and delegate persistent behavior to services
+- return users to the relevant parent view after completing or canceling a nested flow
+
+## Relevant code
+
+- `src/bot/bot.ts`
+- `src/bot/ui/keyboards.ts`
+- `src/bot/ui/renderers.ts`
+- `src/bot/conversations/memory-update.ts`
+- `src/bot/conversations/memory-update-runner.ts`
+- `src/bot/conversations/job-create.ts`
+- `src/bot/conversations/job-detail.ts`
+- `src/bot/conversations/skill-draft.ts`
+
+## Related docs
+
+- `docs/architecture.md`
+- `docs/autonomous-jobs.md`
+- `docs/memory.md`

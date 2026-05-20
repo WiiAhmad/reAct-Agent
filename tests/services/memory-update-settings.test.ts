@@ -9,21 +9,28 @@ function makeService() {
   return { db, service: new MemoryUpdateSettingsService(db) };
 }
 
-test("memory update settings default to enabled every 24 hours", () => {
+test("memory update settings default to enabled every 6 hours", () => {
   const { service } = makeService();
 
   const setting = service.getOrCreate("user-1");
 
   expect(setting.enabled).toBe(true);
-  expect(setting.scheduleLabel).toBe("Every 24 hours");
-  expect(service.renderSummary(setting)).toContain("Every 24 hours");
+  expect(setting.scheduleMode).toBe("interval");
+  expect(setting.intervalSec).toBe(21600);
+  expect(setting.cronExpr).toBeNull();
+  expect(setting.scheduleLabel).toBe("Every 6 hours");
+  expect(service.renderSummary(setting)).toContain("Every 6 hours");
 });
 
-test("memory update settings accept custom cron schedules", () => {
+test("memory update settings accept custom cron schedules after default creation", () => {
   const { service } = makeService();
 
+  service.getOrCreate("user-1");
   const updated = service.updateSchedule("user-1", { scheduleMode: "cron", cronExpr: "0 9 * * *" });
 
+  expect(updated.scheduleMode).toBe("cron");
+  expect(updated.intervalSec).toBeNull();
+  expect(updated.cronExpr).toBe("0 9 * * *");
   expect(updated.scheduleLabel).toBe("Cron: 0 9 * * *");
   expect(service.getOrCreate("user-1").cronExpr).toBe("0 9 * * *");
 });

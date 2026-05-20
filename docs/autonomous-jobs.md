@@ -1,56 +1,86 @@
 # Autonomous jobs
 
-Autonomous jobs are Telegram-managed scheduled tasks that run through the unified scheduler.
+This document explains how scheduled autonomous work is represented, created, and executed.
 
-## Model
+Use `docs/architecture.md` for the top-level system map. This file owns the job model and scheduler-facing job behavior.
 
-A job contains its own schedule and execution state. The scheduler no longer treats autonomous work as a single global cron setting.
+## Source of truth
 
-## Scheduling options
+The source of truth for autonomous job state is the per-job record stored in SQLite.
 
-Jobs support:
+The scheduler tick is only the dispatch mechanism. It is not the user-visible schedule source of truth.
 
-- preset intervals
-- custom cron expressions
+## Job model
 
-The schedule is stored with the job, so each job can be due independently of the others.
+An autonomous job stores:
 
-## Chat-created hybrid jobs
+- the chat and user it belongs to
+- the persisted prompt fields
+- the job type
+- its schedule fields
+- whether it is enabled
+- lifecycle fields such as run count, max runs, last status, and last error
 
-The agent can create hybrid scheduled jobs through tdai_create_job.
+## Job types
 
-Hybrid jobs send fixed text first, then run an agent prompt. They can be one-shot, interval-based, or cron-based. If the user does not specify a repeat count, max_runs defaults to 1, so the job runs once and is deleted after a successful run.
+- `agent` — runs an agent prompt without a fixed leading Telegram message
+- `hybrid` — sends fixed text first, then runs an agent prompt
 
-## Lifecycle
+That distinction matters because not every stored job has the same prompt shape.
 
-From Telegram, a user can:
+## Schedule model
 
-- create a job
-- edit the prompt
-- change the schedule
-- enable or disable the job
-- delete the job
-- inspect the job status and execution history fields surfaced in the UI
+Autonomous jobs support three schedule modes:
 
-## Dispatcher behavior
+- `once`
+- `interval`
+- `cron`
 
-The unified scheduler wakes on an internal tick and checks the database for jobs that are due.
+For one-shot work, the service defaults `maxRuns` to `1` unless a different value is explicitly supplied.
 
-For each due job it:
+## Creation paths
 
-1. marks the job as running
-2. executes the agent in autonomous mode
-3. records success or failure
-4. stores the latest timestamps and error details
+### Menu-created jobs
 
-This design keeps execution centralized while letting each job keep its own cadence.
+The Telegram Jobs menu creates stored jobs through the conversation-based job creation flow. Today that flow asks for one prompt and a repeating schedule, then stores the job as a plain prompt-driven job.
 
-## Relation to Telegram UX
+The current menu flow uses interval presets or a custom cron expression. It does not ask for a separate fixed `message_text` field.
 
-Job management is exposed through menu flows, not through public slash commands.
+### Tool-created hybrid jobs
 
-The old `/job <prompt>` and `/jobs` command surface is no longer the primary interface. Telegram users manage jobs from the Jobs menu instead.
+`tdai_create_job` creates `hybrid` jobs. It stores `message_text`, stores the agent prompt separately, and documents that the fixed Telegram message is sent before the agent prompt runs.
 
-## Operational note
+This path also supports `once`, `interval`, and `cron` schedules through the tool schema.
 
-The scheduler tick remains an internal runtime detail. It is not the source of truth for user-visible scheduling. The source of truth is the per-job record stored in SQLite.
+## Runtime execution lifecycle
+
+When a job is due, the runtime:
+
+1. selects it from persisted job state
+2. records the run start time and running status
+3. sends the fixed Telegram text first when the job is `hybrid`
+4. runs the autonomous agent prompt
+5. sends the final autonomous reply back to Telegram
+6. records completion status, timestamps, and any error text
+7. deletes the job if its max-runs limit has been exhausted
+
+## Scheduler interaction and capacity sharing
+
+The unified scheduler runs due autonomous jobs first.
+
+After autonomous jobs consume part of the tick budget, the scheduler can spend the remaining capacity on due Memory Update users. This means autonomous job throughput and Memory Update throughput share the same per-tick dispatch budget.
+
+## Relevant code
+
+- `src/services/autonomous-jobs.ts`
+- `src/services/schedules.ts`
+- `src/cron/scheduler.ts`
+- `src/cron/autonomous.ts`
+- `src/tools/local.ts`
+- `src/bot/conversations/job-create.ts`
+- `src/bot/conversations/job-detail.ts`
+
+## Related docs
+
+- `docs/architecture.md`
+- `docs/telegram-flow.md`
