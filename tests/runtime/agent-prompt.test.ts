@@ -13,8 +13,16 @@ test("react agent uses the shared system prompt builder", async () => {
   expect(source).not.toContain("You are a Telegram AI agent running on grammY");
 });
 
-test("shared system prompt reflects the Telegram menu runtime", () => {
+test("shared system prompt uses sectioned runtime guidance", () => {
   const prompt = buildAgentSystemPrompt();
+
+  expect(prompt).toContain("Role and runtime:");
+  expect(prompt).toContain("Interaction surface:");
+  expect(prompt).toContain("Operating workflow:");
+  expect(prompt).toContain("Memory model:");
+  expect(prompt).toContain("Tool-use rules:");
+  expect(prompt).toContain("Response style:");
+  expect(prompt).toContain("Failure behavior:");
 
   expect(prompt).toContain("/start, /menu, and /help");
   expect(prompt).toContain("Memory Update");
@@ -22,13 +30,11 @@ test("shared system prompt reflects the Telegram menu runtime", () => {
   expect(prompt).toContain("tdai_create_job");
   expect(prompt).toContain("max_runs defaults to 1");
   expect(prompt).toContain("send fixed text first, then run the agent prompt");
-  expect(prompt).toContain("short-term context offload");
+  expect(prompt).toContain("canonical chat JSONL");
   expect(prompt).toContain("L1.5");
   expect(prompt).toContain("L4 draft skills");
   expect(prompt).toContain("menu/review flows");
-  expect(prompt).toContain("canonical chat JSONL");
-  expect(prompt).toContain("L1 semantic evidence summaries");
-  expect(prompt).toContain("L2 Mermaid task canvases");
   expect(prompt).toContain("task-aware recall");
-  expect(prompt).toContain("concise");
+  expect(prompt).toContain("Do not reveal hidden chain-of-thought");
+  expect(prompt).toContain("Keep Telegram replies concise, practical, and not too long.");
 });
