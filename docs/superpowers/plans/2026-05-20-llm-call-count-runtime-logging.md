@@ -172,18 +172,16 @@ Expected: FAIL with `Cannot find module '../../src/logging/llm-request-context'`
 
 - [ ] **Step 3: Extend the runtime trace types**
 
-Modify `src/logging/types.ts` so request metadata is part of the shared trace envelope.
+Modify `src/logging/types.ts` so request metadata is part of the shared trace envelope without narrowing existing accepted `source` values.
 
 ```ts
 export type RuntimeLogLevel = 1 | 2 | 3;
 
 export type RuntimeRequestType = "telegram_message" | "autonomous_job" | "memory_update" | "unscoped";
 
-export type RuntimeTraceSource = "app" | "bot" | "agent" | "tool" | "scheduler" | "autonomous" | "memory" | "llm";
-
 export interface RuntimeTraceInput {
   minLevel: RuntimeLogLevel;
-  source: RuntimeTraceSource;
+  source: string;
   event: string;
   tags?: string[];
   chatId?: string;

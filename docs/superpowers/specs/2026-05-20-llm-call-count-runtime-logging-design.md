@@ -72,7 +72,7 @@ The design is grounded in the current runtime code at these locations:
 ### Request-scoped LLM call sites that must be included in totals
 
 - `src/agent/react-agent.ts:175-214` — main agent loop.
-- `src/memory/core/service.ts:538-603` — L15 task judgment orchestration.
+- `src/memory/core/service.ts:538-603` — request-time L15 orchestration that leads into the direct LLM boundary in `src/memory/offload/l15.ts:107-123`.
 - `src/memory/offload/l15.ts:107-123` — L15 LLM routing judgment.
 - `src/memory/pipeline/l1.ts:121-139` — L1 extraction pipeline.
 - `src/memory/pipeline/l2.ts:36-54` — L2 scenario synthesis.
@@ -207,11 +207,9 @@ These fields let every per-call event and summary event be correlated back to on
 
 ### Add `llm` as a trace source
 
-Extend `source` support to include:
+Add `source: "llm"` as a newly emitted runtime source value.
 
-- `source: "llm"`
-
-This keeps provider-boundary events distinct from existing `agent`, `memory`, `bot`, and `autonomous` events.
+This change must not narrow or exclude any existing source values already emitted elsewhere in the repo, including non-core values such as `telegram` or `local`. Keep current source handling backward-compatible and simply add `llm` events on top.
 
 ### New LLM event names
 
