@@ -1,4 +1,5 @@
 import type { ConversationTurnRole, EventMeta } from "../types";
+import type { L1RecordMetadata } from "./record-metadata";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -66,7 +67,7 @@ export type L1Record = {
   timestampStart?: string;
   timestampEnd?: string;
   sourceConversationIds: number[];
-  metadata?: EventMeta;
+  metadata?: L1RecordMetadata;
   createdTime: string;
   updatedTime: string;
 };

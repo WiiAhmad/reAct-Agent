@@ -37,7 +37,12 @@ test("IMemoryStore types model generic L0 L1 and profile storage", () => {
     sceneName: "",
     timestampStr: "2026-05-18T00:00:00.000Z",
     sourceConversationIds: [1],
-    metadata: {},
+    metadata: {
+      source: "pipeline",
+      memoryKind: "instruction",
+      sourceMessageIds: ["msg-1"],
+      timestamps: ["2026-05-18T00:00:00.000Z"],
+    },
     createdTime: "2026-05-18T00:00:00.000Z",
     updatedTime: "2026-05-18T00:00:00.000Z",
   };
