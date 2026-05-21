@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+# bugfix-20260423.sh — OC 2026.4.23 allowConversationAccess fix
+# ═══════════════════════════════════════════════════════════════════
+# Issue #73806: In OC 2026.4.23, the Zod schema uses .strict() and rejects
+# the hooks.allowConversationAccess field, which prevents unbundled plugins
+# from registering conversation hooks (llm_input, llm_output, agent_end).
+# PR #71221 fixes this in 4.24.
+#
+# This script does two things (both are idempotent and safe to run repeatedly):
+#   1. Patch dist JS: inject the allowConversationAccess field into the hooks zod schema
+#   2. Write openclaw.json: set hooks.allowConversationAccess = true
+#
+# Version limit: run Part 1 only on OC 2026.4.23; safely skip the dist patch
+#                on other versions.
+#                Part 2 (config write) is version-independent and always ensures
+#                the config exists.
+#
+# Usage:
+#   bash bugfix-20260423.sh [/path/to/openclaw]
+#
+# Environment variables:
+#   OPENCLAW_DIR    — override the openclaw install path (takes precedence after arg)
+#   OPENCLAW_JSON   — override the config file path (default ~/.openclaw/openclaw.json)
+#   DEBUG=1         — enable debug output
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+fail()  { echo -e "${RED}[FAIL]${NC}  $*" >&2; exit 1; }
+debug() { [[ "${DEBUG:-}" == "1" ]] && echo -e "${CYAN}[DEBUG]${NC} $*" || true; }
+
+PLUGIN_ID="memory-tencentdb"
+OPENCLAW_JSON="${OPENCLAW_JSON:-${HOME}/.openclaw/openclaw.json}"
+
+# ═══════════════════════════════════════════════════════════════════
+# Part 1: Patch dist JS (2026.4.23 only)
+# ═══════════════════════════════════════════════════════════════════
+
+_resolve_openclaw_dir() {
+    # Argument > environment variable > auto-detect
+    if [[ -n "${1:-}" ]]; then
+        echo "$1"; return 0
+    fi
+    if [[ -n "${OPENCLAW_DIR:-}" && -d "${OPENCLAW_DIR}" ]]; then
+        echo "$OPENCLAW_DIR"; return 0
+    fi
+    # Auto-detect location
+    node -e "
+      const {dirname, join} = require('path');
+      const {realpathSync, existsSync, readFileSync, statSync} = require('fs');
+      function walkUp(start) {
+        let dir = statSync(start).isDirectory() ? start : dirname(start);
+        for (let i = 0; i < 10; i++) {
+          const pj = join(dir, 'package.json');
+          if (existsSync(pj)) {
+            try { if (JSON.parse(readFileSync(pj,'utf8')).name==='openclaw') { console.log(dir); process.exit(0); } } catch {}
+          }
+          const parent = dirname(dir);
+          if (parent === dir) break;
+          dir = parent;
+        }
+        return null;
+      }
+      try {
+        const {execSync} = require('child_process');
+        const bin = execSync('which openclaw',{encoding:'utf8'}).trim();
+        const real = realpathSync(bin);
+        const found = walkUp(real);
+        if (found) { console.log(found); process.exit(0); }
+        const content = readFileSync(bin,'utf8');
+        const m = content.match(/['\"]([^'\"]*openclaw[^'\"]*\\.(?:js|mjs))['\"]/) ||
+                  content.match(/['\"]([^'\"]*openclaw[^'\"]*)['\"].*node/);
+        if (m) { const f = walkUp(realpathSync(m[1])); if (f) { console.log(f); process.exit(0); } }
+      } catch {}
+      const searchDirs = [
+        join(process.env.HOME||'/root','.local/share/pnpm'),
+        join(process.env.HOME||'/root','.local/node/lib/node_modules'),
+        '/usr/local/lib/node_modules','/usr/lib/node_modules',
+      ];
+      for (const base of searchDirs) {
+        if (!existsSync(base)) continue;
+        try {
+          const {execSync:e2} = require('child_process');
+          const out = e2('find '+JSON.stringify(base)+' -maxdepth 8 -name package.json -path \"*/openclaw/package.json\" 2>/dev/null',{encoding:'utf8',timeout:5000}).trim();
+          for (const line of out.split('\\n')) {
+            if (!line) continue;
+            try { if (JSON.parse(readFileSync(line,'utf8')).name==='openclaw') { console.log(dirname(line)); process.exit(0); } } catch {}
+          }
+        } catch {}
+      }
+      process.exit(1);
+    " 2>/dev/null
+}
+
+patch_dist_js() {
+    local oc_dir
+    oc_dir="$(_resolve_openclaw_dir "${1:-}")" || {
+        warn "[Part 1] Could not find the OpenClaw install directory; skipping dist patch"
+        return 0
+    }
+
+    local dist_dir="$oc_dir/dist"
+    [[ -d "$dist_dir" ]] || { warn "[Part 1] dist directory does not exist: $dist_dir; skipping"; return 0; }
+
+    local version
+    version=$(grep -oP '"version"\s*:\s*"\K[^"]+' "$oc_dir/package.json" 2>/dev/null || echo "unknown")
+    info "[Part 1] OpenClaw version: $version"
+
+    # Version gate: 2026.4.23 only
+    if [[ ! "$version" =~ ^2026\.4\.23($|[-\.]) ]]; then
+        ok "[Part 1] Version $version does not need the schema patch; skipping"
+        return 0
+    fi
+
+    # Exact targeting: unique signature of the hooks zod schema
+    local -a candidates
+    mapfile -t candidates < <(
+        grep -rl 'allowPromptInjection' "$dist_dir" --include='*.js' 2>/dev/null | while read -r _f; do
+            if perl -0777 -ne 'exit(0) if /allowPromptInjection\s*:\s*[a-zA-Z_\$][a-zA-Z0-9_\$]*\s*\.\s*boolean\s*\(\s*\)\s*\.\s*optional\s*\(\s*\)\s*[,\s]*\}\s*\)\s*\.\s*strict\s*\(\s*\)/; exit(1)' "$_f" 2>/dev/null; then
+                echo "$_f"
+            fi
+        done
+    )
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        warn "[Part 1] Could not find the target hooks zod schema file; skipping"
+        return 0
+    elif [[ ${#candidates[@]} -gt 1 ]]; then
+        warn "[Part 1] Found ${#candidates[@]} matching files (expected 1); skipping to stay safe"
+        return 0
+    fi
+
+    local target="${candidates[0]}"
+    local relpath="${target#$dist_dir/}"
+    debug "[Part 1] Target: $relpath"
+
+    # Idempotent: skip if allowConversationAccess is already present in the target file
+    if grep -q 'allowConversationAccess' "$target" 2>/dev/null; then
+        ok "[Part 1] allowConversationAccess already exists in $relpath; skipping"
+        return 0
+    fi
+
+    # Backup
+    [[ -f "${target}.pre-aca-patch.bak" ]] || cp "$target" "${target}.pre-aca-patch.bak"
+
+    # Inject using an exact variable-name match to avoid greedy backtracking
+    perl -0777 -i -pe '
+        s/(allowPromptInjection\s*:\s*[a-zA-Z_\$][a-zA-Z0-9_\$]*\s*\.\s*boolean\s*\(\s*\)\s*\.\s*optional\s*\(\s*\))(\s*\}\s*\)\s*\.\s*strict\s*\(\s*\))/$1,allowConversationAccess:z.boolean().optional()$2/
+    ' "$target"
+
+    # Verify
+    if grep -q 'allowConversationAccess' "$target" 2>/dev/null; then
+        ok "[Part 1] $relpath — patch succeeded"
+    else
+        warn "[Part 1] patch verification failed; restoring backup"
+        cp "${target}.pre-aca-patch.bak" "$target"
+        return 1
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Part 2: Write openclaw.json (all versions; always ensure the config exists)
+# ═══════════════════════════════════════════════════════════════════
+
+patch_config_json() {
+    if [[ ! -f "$OPENCLAW_JSON" ]]; then
+        warn "[Part 2] openclaw.json does not exist: $OPENCLAW_JSON; skipping"
+        return 0
+    fi
+
+    # Idempotency check
+    local exists
+    exists=$(python3 -c "
+import json
+try:
+    with open('$OPENCLAW_JSON') as f:
+        cfg = json.load(f)
+    val = cfg.get('plugins',{}).get('entries',{}).get('$PLUGIN_ID',{}).get('hooks',{}).get('allowConversationAccess')
+    print('yes' if val is True else 'no')
+except Exception:
+    print('no')
+" 2>/dev/null || echo "no")
+
+    if [[ "$exists" == "yes" ]]; then
+        ok "[Part 2] hooks.allowConversationAccess already exists; skipping"
+        return 0
+    fi
+
+    # Write config
+    python3 -c "
+import json
+
+with open('$OPENCLAW_JSON') as f:
+    cfg = json.load(f)
+
+entry = cfg.setdefault('plugins', {}).setdefault('entries', {}).setdefault('$PLUGIN_ID', {})
+hooks = entry.setdefault('hooks', {})
+hooks['allowConversationAccess'] = True
+
+with open('$OPENCLAW_JSON', 'w') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+"
+    ok "[Part 2] hooks.allowConversationAccess = true has been written"
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Main entry point
+# ═══════════════════════════════════════════════════════════════════
+
+info "── bugfix-20260423: allowConversationAccess ──"
+
+patch_dist_js "${1:-}"
+patch_config_json
+
+echo ""
+ok "bugfix-20260423 completed"

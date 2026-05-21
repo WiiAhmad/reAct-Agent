@@ -1,0 +1,22 @@
+# Test files
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+__tests__/
+
+# Development docs and helpers
+docs/
+benchmark-runs/
+workspace/
+
+# Environment and configuration
+.env
+.env.*
+.gitignore
+.codebuddy/
+.coding-ci.yaml
+
+# Runtime artifacts
+node_modules/
+*.tgz

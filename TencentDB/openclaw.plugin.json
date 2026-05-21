@@ -1,0 +1,160 @@
+{
+  "id": "memory-tencentdb",
+  "name": "Memory (TencentDB)",
+  "description": "Four-layer memory system — auto-captures, structures, and profiles conversational knowledge",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": ["tdai_memory_search", "tdai_conversation_search"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "storeBackend": {
+        "type": "string",
+        "enum": ["sqlite", "tcvdb"],
+        "default": "sqlite",
+        "description": "Storage backend: sqlite (local SQLite + sqlite-vec) or tcvdb (Tencent Cloud VectorDB)"
+      },
+      "capture": {
+        "type": "object",
+        "description": "Automatic conversation capture settings (L0)",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Whether to enable automatic conversation capture" },
+          "excludeAgents": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Agent glob patterns to exclude (for example, bench-judge-*); matching agents are not captured, recalled, or scheduled in the pipeline" },
+          "l0l1RetentionDays": { "type": "number", "default": 0, "description": "Number of days to keep local L0/L1 files. 0 = no cleanup; nonzero values must normally be >= 3. Values of 1 or 2 require allowAggressiveCleanup to be explicitly enabled" },
+          "allowAggressiveCleanup": { "type": "boolean", "default": false, "description": "Whether to allow high-risk cleanup settings (l0l1RetentionDays = 1 or 2)" },
+          "cleanTime": { "type": "string", "default": "03:00", "description": "Daily cleanup time (HH:mm)" }
+        }
+      },
+      "extraction": {
+        "type": "object",
+        "description": "Memory extraction settings (L1)",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Whether to enable background extraction" },
+          "enableDedup": { "type": "boolean", "default": true, "description": "Intelligent L1 deduplication (detects conflicts using vector similarity or keywords)" },
+          "maxMemoriesPerSession": { "type": "number", "default": 20, "description": "Maximum number of memories extracted per session in a single L1 run" },
+          "model": { "type": "string", "description": "Model used for extraction (format: provider/model). Uses the OpenClaw default model when omitted" }
+        }
+      },
+      "persona": {
+        "type": "object",
+        "description": "Scene summarization and user persona settings (L2/L3)",
+        "properties": {
+          "triggerEveryN": { "type": "number", "default": 50, "description": "Generate a persona after every N new memories" },
+          "maxScenes": { "type": "number", "default": 15, "description": "Maximum number of scenes" },
+          "backupCount": { "type": "number", "default": 3, "description": "Number of persona backups to keep" },
+          "sceneBackupCount": { "type": "number", "default": 10, "description": "Number of scene-block backups to keep" },
+          "model": { "type": "string", "description": "Model used for persona generation (format: provider/model). Uses the OpenClaw default model when omitted" }
+        }
+      },
+      "pipeline": {
+        "type": "object",
+        "description": "L1→L2→L3 pipeline scheduling settings",
+        "properties": {
+          "everyNConversations": { "type": "number", "default": 5, "description": "Trigger L1 batch processing every N conversation turns" },
+          "enableWarmup": { "type": "boolean", "default": true, "description": "Warm-up mode: new sessions start by triggering after 1 turn, then double after each L1 run (1→2→4→...→everyN) to speed up early memory extraction" },
+          "l1IdleTimeoutSeconds": { "type": "number", "default": 600, "description": "L1 idle timeout in seconds: how long after the user stops talking to trigger L1 batch processing" },
+          "l2DelayAfterL1Seconds": { "type": "number", "default": 10, "description": "Delay in seconds after L1 completes before triggering L2" },
+          "l2MinIntervalSeconds": { "type": "number", "default": 900, "description": "Minimum interval in seconds between two L2 extractions for the same session" },
+          "l2MaxIntervalSeconds": { "type": "number", "default": 3600, "description": "Maximum L2 polling interval in seconds for the same active session" },
+          "sessionActiveWindowHours": { "type": "number", "default": 24, "description": "Session active window in hours; sessions inactive longer than this stop L2 polling" }
+        }
+      },
+      "recall": {
+        "type": "object",
+        "description": "Memory recall settings",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Whether to enable automatic recall" },
+          "maxResults": { "type": "number", "default": 5, "description": "Maximum number of recalled results" },
+          "scoreThreshold": { "type": "number", "default": 0.3, "description": "Minimum score threshold" },
+          "strategy": { "type": "string", "enum": ["embedding", "keyword", "hybrid"], "default": "hybrid", "description": "Search strategy: keyword, embedding, or hybrid (mixed RRF fusion, recommended)" },
+          "timeoutMs": { "type": "number", "default": 5000, "description": "Overall recall timeout in milliseconds; on timeout, memory injection is skipped and a warning is logged" }
+        }
+      },
+      "embedding": {
+        "type": "object",
+        "description": "Vector search (embedding) configuration",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Whether to enable vector search (disabled in practice when provider=none)" },
+          "provider": { "type": "string", "default": "none", "description": "Embedding service provider: enter the name of a remote OpenAI-compatible service (for example, openai or deepseek); leave empty or set to none to disable vector search" },
+          "proxyUrl": { "type": "string", "description": "Local proxy URL (required only when provider=qclaw). When configured, embedding requests are forwarded through this proxy and the original baseUrl is passed in the Remote-URL header" },
+          "baseUrl": { "type": "string", "description": "API base URL (required): the API endpoint for the selected provider" },
+          "apiKey": { "type": "string", "description": "API key (required)" },
+          "model": { "type": "string", "description": "Model name (required)" },
+          "dimensions": { "type": "number", "description": "Vector dimensions (required; must match the selected model)" },
+          "conflictRecallTopK": { "type": "number", "default": 5, "description": "Top-K recall count for conflict detection" },
+          "maxInputChars": { "type": "number", "default": 5000, "description": "Maximum input text length for embeddings; longer input is truncated and a warning is logged (default 5000, suitable for most model token limits)" },
+          "timeoutMs": { "type": "number", "default": 10000, "description": "Timeout for a single embedding API call in milliseconds; timed-out requests are aborted and not retried" },
+          "recallTimeoutMs": { "type": "number", "description": "Embedding timeout for the recall path in milliseconds; overrides timeoutMs. Users are waiting on this path, so a shorter value is recommended (for example, 3000)" },
+          "captureTimeoutMs": { "type": "number", "description": "Embedding timeout for the capture path in milliseconds; overrides timeoutMs. This runs in the background, so a longer value is acceptable (for example, 15000)" }
+        }
+      },
+      "tcvdb": {
+        "type": "object",
+        "description": "Tencent Cloud VectorDB configuration (effective only when storeBackend=tcvdb)",
+        "properties": {
+          "url": { "type": "string", "description": "Instance URL (required, for example http://10.0.1.1:8100)" },
+          "username": { "type": "string", "default": "root", "description": "Account name" },
+          "apiKey": { "type": "string", "description": "API key (required)" },
+          "database": { "type": "string", "description": "Database name (automatically generated from the instance ID by default when omitted)" },
+          "alias": { "type": "string", "description": "User-friendly alias (optional; used for identification in database.json)" },
+          "embeddingModel": { "type": "string", "default": "bge-large-zh", "description": "Server-side embedding model" },
+          "timeout": { "type": "number", "default": 10000, "description": "Request timeout in milliseconds" },
+          "caPemPath": { "type": "string", "description": "Path to the CA certificate PEM file (used for HTTPS connections)" }
+        }
+      },
+      "bm25": {
+        "type": "object",
+        "description": "BM25 sparse-vector encoding settings (mainly for the tcvdb backend)",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Whether to enable BM25 sparse-vector encoding" },
+          "language": { "type": "string", "enum": ["zh", "en"], "default": "zh", "description": "Tokenization language: zh (Chinese) or en (English)" }
+        }
+      },
+      "report": {
+        "type": "object",
+        "description": "Metrics reporting settings",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false, "description": "Whether to enable metrics reporting (outputs structured METRIC JSON through Gateway logs)" },
+          "type": { "type": "string", "default": "local", "description": "Reporting mode: local means structured JSON logs are emitted through the logger" }
+        }
+      },
+      "llm": {
+        "type": "object",
+        "description": "Standalone LLM configuration — when enabled, L1/L2/L3 extraction bypasses OpenClaw's built-in model and directly calls the specified OpenAI-compatible API. Disabled by default (uses the OpenClaw host model).",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false, "description": "Whether to enable standalone LLM mode. When disabled, the OpenClaw host model is used." },
+          "baseUrl": { "type": "string", "default": "https://api.openai.com/v1", "description": "OpenAI-compatible API endpoint" },
+          "apiKey": { "type": "string", "description": "API key" },
+          "model": { "type": "string", "default": "gpt-4o", "description": "Model name (for example, gpt-4o, deepseek-v3, claude-sonnet-4-6)" },
+          "maxTokens": { "type": "number", "default": 4096, "description": "Maximum output token count" },
+          "timeoutMs": { "type": "number", "default": 120000, "description": "Request timeout in milliseconds" }
+        }
+      },
+      "offload": {
+        "type": "object",
+        "description": "Context Offload settings — a multi-level context compression system (independent switch, disabled by default)",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false, "description": "Whether to enable Context Offload (disabled by default and does not affect Memory features)" },
+          "model": { "type": "string", "description": "LLM model used by Offload (format: provider/model). Uses the OpenClaw default model when omitted" },
+          "temperature": { "type": "number", "default": 0.2, "description": "LLM temperature parameter" },
+          "forceTriggerThreshold": { "type": "number", "default": 4, "description": "Number of accumulated tool pairs after which L1 is force-triggered" },
+          "dataDir": { "type": "string", "description": "Custom data directory (absolute path), defaults to ~/.openclaw/context-offload" },
+          "defaultContextWindow": { "type": "number", "default": 200000, "description": "Default context window size" },
+          "maxPairsPerBatch": { "type": "number", "default": 20, "description": "Maximum number of tool pairs per L1 batch" },
+          "l2NullThreshold": { "type": "number", "default": 4, "description": "Trigger L2 when the number of node_id=null entries in offload.jsonl reaches this threshold" },
+          "l2TimeoutSeconds": { "type": "number", "default": 300, "description": "Trigger L2 when this many seconds have elapsed since the previous L2 run" },
+          "mildOffloadRatio": { "type": "number", "default": 0.5, "description": "Mild compression trigger ratio (as a fraction of the context window)" },
+          "aggressiveCompressRatio": { "type": "number", "default": 0.85, "description": "Aggressive compression trigger ratio" },
+          "mmdMaxTokenRatio": { "type": "number", "default": 0.2, "description": "Token budget ratio for MMD injection" },
+          "backendUrl": { "type": "string", "description": "Backend service URL (for example, https://offload-api.example.com); when configured, L1/L1.5/L2/L4 use the backend" },
+          "backendApiKey": { "type": "string", "description": "Backend API authentication token" },
+          "backendTimeoutMs": { "type": "number", "default": 120000, "description": "Backend call timeout in milliseconds" }
+        }
+      }
+    }
+  }
+}
