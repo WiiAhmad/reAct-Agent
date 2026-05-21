@@ -1,5 +1,9 @@
 # grammY Telegram Agent on Bun
 
+```bash
+ccs codex --dangerously-skip-permissions
+```
+
 A Telegram AI agent built with Bun, grammY, and `@grammyjs/conversations`.
 
 The runtime is now menu-driven. Public commands are only:
