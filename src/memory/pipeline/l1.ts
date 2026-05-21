@@ -2,18 +2,14 @@ import type { LlmProvider } from "../../agent/types";
 import { createHash } from "node:crypto";
 import { canonicalizeMemoryAtomText, mergeNumberSets } from "../core/canonical";
 import type { MemoryBackend } from "../core/backend";
+import { buildL1RecordMetadata, type L1MemoryKind } from "../core/store/record-metadata";
 import type { IMemoryStore, L1Record } from "../core/store/types";
 import type { ConversationTurn, MemoryAtom } from "../core/types";
 import { buildL1SystemPrompt } from "../prompts/l1";
-
-type L1Extraction = {
-  text: string;
-  importance?: number;
-  source_turn_ids?: number[];
-};
+import { normalizeL1Extraction, type ParsedL1Extraction } from "./l1-schema";
 
 type ParsedExtractions = {
-  extractions: L1Extraction[];
+  extractions: ParsedL1Extraction[];
   malformed: boolean;
 };
 
@@ -32,7 +28,7 @@ function parseExtractions(content: string): ParsedExtractions {
       return { extractions: [], malformed: true };
     }
 
-    return { extractions: parsed as L1Extraction[], malformed: false };
+    return { extractions: parsed as ParsedL1Extraction[], malformed: false };
   } catch {
     return { extractions: [], malformed: true };
   }
@@ -81,6 +77,12 @@ async function buildStorePrimaryRecord(
   importance: number,
   sourceConversationIds: number[],
   turns: ConversationTurn[],
+  semantic?: {
+    sceneName: string;
+    memoryKind: L1MemoryKind;
+    sourceMessageIds: string[];
+    timestamps: string[];
+  },
 ): Promise<{ record: L1Record; created: boolean }> {
   const canonicalText = canonicalizeMemoryAtomText(text);
   if (!canonicalText) {
@@ -106,12 +108,18 @@ async function buildStorePrimaryRecord(
       content: text,
       type: "L1",
       priority: Math.max(existing?.priority ?? 0, importance),
-      sceneName: existing?.sceneName ?? "conversation",
+      sceneName: semantic?.sceneName ?? existing?.sceneName ?? "conversation",
       timestampStr: timestampEnd,
       timestampStart,
       timestampEnd,
       sourceConversationIds: mergeNumberSets(existing?.sourceConversationIds ?? [], sourceConversationIds),
-      metadata: { ...(existing?.metadata ?? {}), source: "pipeline", canonicalText },
+      metadata: buildL1RecordMetadata({
+        source: "pipeline",
+        canonicalText,
+        memoryKind: semantic?.memoryKind,
+        sourceMessageIds: semantic?.sourceMessageIds,
+        timestamps: semantic?.timestamps,
+      }),
       createdTime: existing?.createdTime ?? timestampStart,
       updatedTime: timestampEnd,
     },
@@ -145,22 +153,27 @@ export async function runL1Pipeline(
 
   let createdAtoms = 0;
   for (const item of parsed.extractions) {
-    const text = item.text?.trim();
-    if (!text) continue;
+    const normalized = normalizeL1Extraction(item);
+    if (!normalized) continue;
 
-    const importance = item.importance ?? 3;
-    const sourceConversationIds = item.source_turn_ids ?? [];
+    const importance = normalized.importance ?? 3;
+    const sourceConversationIds = normalized.source_turn_ids ?? [];
     let storeCreated: boolean | undefined;
 
     if (store) {
-      const { record, created } = await buildStorePrimaryRecord(store, userId, text, importance, sourceConversationIds, turns);
+      const { record, created } = await buildStorePrimaryRecord(store, userId, normalized.text, importance, sourceConversationIds, turns, {
+        sceneName: normalized.scene_name ?? "conversation",
+        memoryKind: normalized.memory_kind ?? "episodic",
+        sourceMessageIds: normalized.source_message_ids ?? [],
+        timestamps: normalized.timestamps ?? [],
+      });
       const stored = await store.upsertL1(record);
       storeCreated = stored ? created : undefined;
     }
 
     const result = await backend.upsertMemoryAtom({
       userId,
-      text,
+      text: normalized.text,
       importance,
       sourceConversationIds,
       sourceLayer: "L1",
