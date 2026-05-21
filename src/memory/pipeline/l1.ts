@@ -113,13 +113,16 @@ async function buildStorePrimaryRecord(
       timestampStart,
       timestampEnd,
       sourceConversationIds: mergeNumberSets(existing?.sourceConversationIds ?? [], sourceConversationIds),
-      metadata: buildL1RecordMetadata({
-        source: "pipeline",
-        canonicalText,
-        memoryKind: semantic?.memoryKind,
-        sourceMessageIds: semantic?.sourceMessageIds,
-        timestamps: semantic?.timestamps,
-      }),
+      metadata: {
+        ...(existing?.metadata ?? {}),
+        ...buildL1RecordMetadata({
+          source: "pipeline",
+          canonicalText,
+          memoryKind: semantic?.memoryKind,
+          sourceMessageIds: semantic?.sourceMessageIds,
+          timestamps: semantic?.timestamps,
+        }),
+      },
       createdTime: existing?.createdTime ?? timestampStart,
       updatedTime: timestampEnd,
     },
