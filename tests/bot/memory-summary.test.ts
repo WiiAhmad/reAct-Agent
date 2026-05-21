@@ -54,6 +54,7 @@ test("memory status includes context-offload settings and generated skill count"
     backendName: "sqlite",
     backendOwner: "test-owner",
     maintenanceCron: "0 * * * *",
+    retentionDays: 30,
     offloadEnabled: true,
     l15: {
       enabled: true,

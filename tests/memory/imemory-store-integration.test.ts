@@ -52,6 +52,7 @@ function memoryServiceOptions(tempDir: string): MemoryServiceOptions {
     backendName: "sqlite",
     backendOwner: "test-owner",
     maintenanceCron: "0 * * * *",
+    retentionDays: 30,
     offloadEnabled: true,
     l15: {
       enabled: true,
@@ -106,6 +107,7 @@ async function createFactoryMemory() {
     },
     memory: {
       maintenanceCron: "0 * * * *",
+      retentionDays: 30,
       offloadEnabled: true,
       offloadMinChars: 2500,
       offloadSummaryChars: 900,
@@ -314,6 +316,22 @@ test("L2 and L3 pipelines sync profiles to IMemoryStore before backend compatibi
   });
 
   try {
+    await store.upsertL1({
+      recordId: "101",
+      userId: "u1",
+      sessionKey: "chat:c1",
+      sessionId: "c1",
+      content: "User prefers Bun runtime",
+      type: "L1",
+      priority: 4,
+      sceneName: "conversation",
+      timestampStr: "2026-05-18T08:00:00.000Z",
+      sourceConversationIds: [1],
+      metadata: { source: "test" },
+      createdTime: "2026-05-18T08:00:00.000Z",
+      updatedTime: "2026-05-18T08:00:00.000Z",
+    });
+
     const l2 = await runL2Pipeline(orderedBackend, fakeLlm, "u1", [
       {
         id: 1,
@@ -327,13 +345,16 @@ test("L2 and L3 pipelines sync profiles to IMemoryStore before backend compatibi
       },
     ], orderedStore);
     expect(l2?.scenarioId).toBeGreaterThan(0);
-    await runL3Pipeline(orderedBackend, fakeLlm, "u1", l2?.scenarioId ?? 0, l2?.bodyMarkdown ?? "", orderedStore);
+    const firstPersonaUpdate = await runL3Pipeline(orderedBackend, fakeLlm, "u1", l2?.scenarioId ?? 0, l2?.bodyMarkdown ?? "", orderedStore);
+    const secondPersonaUpdate = await runL3Pipeline(orderedBackend, fakeLlm, "u1", l2?.scenarioId ?? 0, l2?.bodyMarkdown ?? "", orderedStore);
 
+    expect(firstPersonaUpdate).toBe(true);
+    expect(secondPersonaUpdate).toBe(false);
     expect(calls[0]).toBe("store.syncProfiles");
     expect(calls.indexOf("store.syncProfiles")).toBeLessThan(calls.indexOf("backend.insertMemoryScenario"));
     expect(calls.lastIndexOf("store.syncProfiles")).toBeLessThan(calls.indexOf("backend.upsertPersona"));
     expect(await store.pullProfiles?.()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "l2", userId: "u1", content: expect.stringContaining("Runtime choices") }),
+      expect.objectContaining({ type: "l2", userId: "u1", filename: "scene-conversation.md", content: expect.stringContaining("User prefers Bun runtime") }),
       expect.objectContaining({ type: "l3", userId: "u1", content: expect.stringContaining("Prefers Bun runtime") }),
     ]));
   } finally {

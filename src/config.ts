@@ -84,6 +84,7 @@ export function parseConfig(source: ConfigSource) {
     },
     memory: {
       maintenanceCron: env(source, "MEMORY_MAINTENANCE_CRON", "*/10 * * * *"),
+      retentionDays: intEnv(source, "MEMORY_RETENTION_DAYS", 30),
       recallMaxResults: intEnv(source, "MEMORY_RECALL_MAX_RESULTS", 5),
       offloadEnabled: boolEnv(source, "MEMORY_OFFLOAD_ENABLED", true),
       offloadMinChars: intEnv(source, "MEMORY_OFFLOAD_MIN_CHARS", 2500),
@@ -212,6 +213,7 @@ export function getRuntimeConfigSummary() {
     },
     memory: {
       maintenanceCron: config.memory.maintenanceCron,
+      retentionDays: config.memory.retentionDays,
       sqliteVecEnabled: config.memory.sqliteVecEnabled,
       jsonlExportEnabled: config.memory.jsonlExportEnabled,
       l15: config.memory.l15,

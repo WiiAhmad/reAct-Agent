@@ -24,6 +24,7 @@ function makeOptions(tempDir: string, overrides: Partial<MemoryServiceOptions["l
     backendName: "sqlite",
     backendOwner: "test",
     maintenanceCron: "0 * * * *",
+    retentionDays: 30,
     offloadEnabled: true,
     l15: {
       enabled: false,

@@ -3,6 +3,7 @@ import { emitTrace, NEW_MEMORY_STACK_TAG } from "../../logging/helpers";
 import type { RuntimeTraceEmitter } from "../../logging/types";
 import type { MemoryBackend } from "../core/backend";
 import type { IMemoryStore, L0Cursor } from "../core/store/types";
+import { pruneExpiredMemory } from "./cleanup";
 import { runL1Pipeline } from "./l1";
 import { runL2Pipeline } from "./l2";
 import { runL3Pipeline } from "./l3";
@@ -57,6 +58,7 @@ export class PipelineCoordinator {
     private readonly llm: LlmProvider,
     traceOrStore?: RuntimeTraceEmitter | IMemoryStore,
     store?: IMemoryStore,
+    private readonly retentionDays = 30,
   ) {
     if (traceOrStore && "emit" in traceOrStore) {
       this.trace = traceOrStore;
@@ -182,8 +184,15 @@ export class PipelineCoordinator {
       l2Result.bodyMarkdown,
       this.store,
     );
+    const cleanup = await pruneExpiredMemory(this.store, this.retentionDays);
     await emitMemoryUpdateProgress(options.onProgress, { source, userId, stage: "l3", status: "complete", scenarioId: l2Result.scenarioId, personaUpdated });
-    this.emitStage(userId, "l3", "complete", { source, scenarioId: l2Result.scenarioId, personaUpdated });
+    this.emitStage(userId, "l3", "complete", {
+      source,
+      scenarioId: l2Result.scenarioId,
+      personaUpdated,
+      l0Deleted: cleanup.l0Deleted,
+      l1Deleted: cleanup.l1Deleted,
+    });
 
     return {
       l1Created: l1Result.createdAtoms,

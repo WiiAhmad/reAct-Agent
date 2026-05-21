@@ -48,6 +48,7 @@ export type MemoryServiceOptions = {
   backendName: string;
   backendOwner: string;
   maintenanceCron: string;
+  retentionDays: number;
   offloadEnabled: boolean;
   l15: {
     enabled: boolean;

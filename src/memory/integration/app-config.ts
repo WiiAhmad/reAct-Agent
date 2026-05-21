@@ -15,6 +15,7 @@ export function buildMemoryServiceFactoryConfig(runtime: RuntimeConfig) {
     },
     memory: {
       maintenanceCron: runtime.memory.maintenanceCron,
+      retentionDays: runtime.memory.retentionDays,
       offloadEnabled: runtime.memory.offloadEnabled,
       offloadMinChars: runtime.memory.offloadMinChars,
       offloadSummaryChars: runtime.memory.offloadSummaryChars,

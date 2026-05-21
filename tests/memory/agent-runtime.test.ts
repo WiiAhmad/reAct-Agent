@@ -41,6 +41,7 @@ test("agent loop logs user and assistant turns through MemoryService", async () 
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -123,6 +124,7 @@ test("runReactAgent tags provider calls with agent origin metadata", async () =>
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -186,6 +188,7 @@ test("agent runtime emits trace events and tags memory-aware flow", async () => 
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -247,6 +250,7 @@ test("agent runtime keeps tdai_create_job available for unrelated follow-up chat
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -299,6 +303,7 @@ test("agent runtime keeps tdai_create_job available for reminder requests", asyn
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -349,6 +354,7 @@ test("agent runtime keeps tdai_create_job available for reminder clarification t
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -414,6 +420,7 @@ test("agent runtime keeps current datetime one-shot question out of task canvas 
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -500,6 +507,7 @@ test("agent runtime passes tool call id into semantic L1 offload", async () => {
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -550,6 +558,7 @@ test("agent runtime hides scheduling and direct Telegram tools during autonomous
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,
@@ -609,6 +618,7 @@ test("agent runtime includes relevant historical task canvases in memory context
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 2500,
         offloadSummaryChars: 900,

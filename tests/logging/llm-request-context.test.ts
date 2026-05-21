@@ -94,12 +94,13 @@ test("recordLlmCall safely counts origins named like object prototype keys", asy
 
   const summaryEvents = events.filter((event) => event.event === "request.summary");
   expect(summaryEvents).toHaveLength(1);
-  const byOrigin = summaryEvents[0]?.payload?.byOrigin as Record<string, number>;
+  const payload = summaryEvents[0]?.payload as { byOrigin: Record<string, number> } | undefined;
+  const byOrigin = payload?.byOrigin ?? {};
   expect(Object.getPrototypeOf(byOrigin)).toBe(Object.prototype);
   expect(Object.prototype.hasOwnProperty.call(byOrigin, "__proto__")).toBe(true);
   expect(Object.prototype.hasOwnProperty.call(byOrigin, "constructor")).toBe(true);
   expect(byOrigin["__proto__"]).toBe(1);
-  expect(byOrigin.constructor).toBe(1);
+  expect(byOrigin["constructor"]).toBe(1);
 });
 
 test("runWithLlmRequestContext emits error summaries and leaves unscoped calls ungrouped", async () => {

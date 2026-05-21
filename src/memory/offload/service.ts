@@ -7,7 +7,8 @@ import { truncateText } from "../../utils/text";
 import type { MemoryBackend } from "../core/backend";
 import type { EventMeta } from "../core/types";
 import { generateL1EvidenceSummary } from "./l1";
-import { applyL2Patch, generateL2MermaidPatch } from "./l2";
+import { generateL2MermaidPatch } from "./l2";
+import { flushPendingTaskEvidence } from "./runtime";
 
 type OffloadServiceOptions = {
   offloadMinChars: number;
@@ -304,8 +305,17 @@ export class OffloadService {
     if (this.options.l2.enabled && pending.length >= this.options.l2.triggerMinEntries) {
       const currentMmd = await this.readExistingCanvas(canvasPath.absolutePath);
       const task = await this.backend.getTaskCanvasById(pending[0]!.userId, taskId);
-      const patch = task
-        ? await generateL2MermaidPatch(this.llm, {
+      const nodes = await this.backend.listTaskGraphNodesForTask(taskId, 80);
+      const fallbackMmd = `${this.buildTaskCanvas(chatId, nodes)}\n`;
+      const flushed = await flushPendingTaskEvidence({
+        currentMmd,
+        fallbackMmd,
+        generatePatch: async () => {
+          if (!task) {
+            return undefined;
+          }
+
+          return generateL2MermaidPatch(this.llm, {
             taskLabel: task.label,
             currentMmd,
             entries: pending.map((entry) => ({
@@ -316,27 +326,27 @@ export class OffloadService {
               resultRef: entry.resultRef,
             })),
             maxCanvasChars: this.options.l2.maxCanvasChars,
-          })
-        : undefined;
-
-      if (patch) {
-        const nextMmd = applyL2Patch(currentMmd, patch);
-        await mkdir(dirname(canvasPath.absolutePath), { recursive: true });
-        await this.writeTextFile(canvasPath.absolutePath, nextMmd);
-        await this.backend.updateL1EvidenceNodeMapping(taskId, patch.nodeMapping);
-        if (task) {
-          await this.backend.upsertTaskCanvasSearchText({
-            taskId,
-            chatId,
-            userId: task.userId,
-            label: task.label,
-            status: task.status,
-            filePath: task.filePath,
-            canvas: nextMmd,
           });
-        }
-        return;
+        },
+      });
+
+      await mkdir(dirname(canvasPath.absolutePath), { recursive: true });
+      await this.writeTextFile(canvasPath.absolutePath, flushed.canvas);
+      if (Object.keys(flushed.nodeMapping).length > 0) {
+        await this.backend.updateL1EvidenceNodeMapping(taskId, flushed.nodeMapping);
       }
+      if (task) {
+        await this.backend.upsertTaskCanvasSearchText({
+          taskId,
+          chatId,
+          userId: task.userId,
+          label: task.label,
+          status: task.status,
+          filePath: task.filePath,
+          canvas: flushed.canvas,
+        });
+      }
+      return;
     }
 
     const nodes = await this.backend.listTaskGraphNodesForTask(taskId, 80);

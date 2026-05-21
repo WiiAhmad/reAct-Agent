@@ -7,6 +7,7 @@ export type L2EvidenceEntry = {
   summary: string;
   score: number;
   resultRef?: string;
+  createdAt?: string;
 };
 
 export type L2ReplaceBlock = {

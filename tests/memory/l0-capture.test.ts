@@ -36,6 +36,7 @@ test("logToolCall and logToolResult mirror tool events into IMemoryStore L0", as
         backendName: "sqlite",
         backendOwner: "test",
         maintenanceCron: "0 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         l15: { enabled: true, mode: "hybrid", recentMessages: 6, historyTaskLimit: 10, maxCanvasChars: 12000, safeFallback: "short" },
         l1: { enabled: true, mode: "local", maxSummaryChars: 900, defaultScore: 5 },

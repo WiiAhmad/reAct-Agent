@@ -11,6 +11,7 @@ test("parseConfig defaults to local-first SQLite memory settings", () => {
   expect(runtime.app).toEqual({ timezone: "Asia/Jakarta", locale: "id-ID" });
   expect(runtime.memory.sqliteVecEnabled).toBe(true);
   expect(runtime.memory.jsonlExportEnabled).toBe(false);
+  expect(runtime.memory.retentionDays).toBe(30);
   expect(runtime.memory.l15).toEqual({
     enabled: true,
     mode: "hybrid",
@@ -67,6 +68,7 @@ test("parseConfig applies app and memory offload pipeline overrides", () => {
     MEMORY_L15_HISTORY_TASK_LIMIT: "12",
     MEMORY_L15_MAX_CANVAS_CHARS: "3456",
     MEMORY_L15_SAFE_FALLBACK: "short",
+    MEMORY_RETENTION_DAYS: "14",
     MEMORY_TASK_CANVAS_DIR: "./custom/task-canvases",
     MEMORY_L4_ENABLED: "false",
     MEMORY_L4_MODE: "local",
@@ -78,6 +80,7 @@ test("parseConfig applies app and memory offload pipeline overrides", () => {
   });
 
   expect(runtime.app).toEqual({ timezone: "UTC", locale: "en-US" });
+  expect(runtime.memory.retentionDays).toBe(14);
   expect(runtime.memory.l15).toEqual({
     enabled: false,
     mode: "rules",

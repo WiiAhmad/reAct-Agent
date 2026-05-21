@@ -24,6 +24,7 @@ const memory = await createMemoryService(db, llm as any, {
   },
   memory: {
     maintenanceCron: config.memory.maintenanceCron,
+    retentionDays: config.memory.retentionDays,
     offloadEnabled: config.memory.offloadEnabled,
     offloadMinChars: config.memory.offloadMinChars,
     offloadSummaryChars: config.memory.offloadSummaryChars,

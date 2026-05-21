@@ -21,6 +21,7 @@ type MemoryServiceFactoryConfig = {
   };
   memory: {
     maintenanceCron: string;
+    retentionDays: number;
     offloadEnabled: boolean;
     offloadMinChars: number;
     offloadSummaryChars: number;
@@ -135,7 +136,13 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
     l2,
     jsonlEnabled: config.memory.jsonlExportEnabled,
   }, llm, undefined, trace);
-  const pipelineCoordinator = new PipelineCoordinator(backend, llm, trace, store);
+  const pipelineCoordinator = new PipelineCoordinator(
+    backend,
+    llm,
+    trace,
+    store,
+    config.memory.retentionDays,
+  );
 
   return new MemoryService(
     backend,
@@ -145,6 +152,7 @@ export async function createMemoryService(db: Database, llm: LlmProvider, config
       backendName: "sqlite",
       backendOwner: "project-owned memory backend",
       maintenanceCron: config.memory.maintenanceCron,
+      retentionDays: config.memory.retentionDays,
       offloadEnabled: config.memory.offloadEnabled,
       l15: config.memory.l15 ?? defaultL15,
       l1,

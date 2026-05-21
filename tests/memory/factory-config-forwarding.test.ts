@@ -14,6 +14,7 @@ test("buildMemoryServiceFactoryConfig forwards semantic memory settings", () => 
 
   const factoryConfig = buildMemoryServiceFactoryConfig(runtime);
 
+  expect(factoryConfig.memory.retentionDays).toBe(runtime.memory.retentionDays);
   expect(factoryConfig.memory.l1).toEqual(runtime.memory.l1);
   expect(factoryConfig.memory.l2).toEqual(runtime.memory.l2);
   expect(factoryConfig.memory.taskRecall).toEqual(runtime.memory.taskRecall);

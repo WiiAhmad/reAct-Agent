@@ -29,6 +29,7 @@ test("completion turns keep task ownership for follow-up tool offload", async ()
       },
       memory: {
         maintenanceCron: "*/10 * * * *",
+        retentionDays: 30,
         offloadEnabled: true,
         offloadMinChars: 1000,
         offloadSummaryChars: 80,
