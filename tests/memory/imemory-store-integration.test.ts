@@ -14,6 +14,7 @@ import { RecallService } from "../../src/memory/recall/service";
 import { PipelineCoordinator } from "../../src/memory/pipeline/coordinator";
 import { runL1Pipeline } from "../../src/memory/pipeline/l1";
 import { runL2Pipeline } from "../../src/memory/pipeline/l2";
+import { buildSceneProfiles } from "../../src/memory/pipeline/l2-scenes";
 import { runL3Pipeline } from "../../src/memory/pipeline/l3";
 
 const fakeLlm: LlmProvider = {
@@ -257,6 +258,324 @@ test("createMemoryService restart merges legacy L1 evidence into canonical store
   }
 }, 20000);
 
+test("createMemoryService restart compacts paraphrased generic memories across backend and store", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-generic-compact-"));
+  const dbPath = join(tempDir, "agent.db");
+  const config = {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  };
+
+  try {
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      const service = await createMemoryService(db, fakeLlm, config);
+      await service.saveMemory({ userId: "u1", text: "User wants the assistant's name to be Winter.", importance: 4 });
+      await service.saveMemory({ userId: "u1", text: "User wants the assistant's name to be Winter (user corrects: 'remember ur name is Winter').", importance: 4 });
+      db.close();
+    }
+
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      await createMemoryService(db, fakeLlm, config);
+
+      const atomCount = (db.query(`SELECT COUNT(*) AS count FROM memory_atoms WHERE user_id = ?`).get("u1") as { count: number }).count;
+      const storeCount = (db.query(`SELECT COUNT(*) AS count FROM memory_store_l1 WHERE user_id = ?`).get("u1") as { count: number }).count;
+
+      expect(atomCount).toBe(1);
+      expect(storeCount).toBe(1);
+      db.close();
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+  }
+}, 20000);
+
+test("createMemoryService semantically merges paraphrased generic saves immediately", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-semantic-save-"));
+  const db = new Database(":memory:");
+  migrate(db);
+  const llm = {
+    async complete({ messages }: { messages: Array<{ role: string; content?: string }> }) {
+      const system = String(messages[0]?.content ?? "");
+      if (!system.includes("L1 semantic dedupe decision step")) {
+        throw new Error(`Unexpected LLM call: ${system}`);
+      }
+      const prompt = String(messages[1]?.content ?? "");
+      const payload = JSON.parse(prompt.match(/\{[\s\S]*\}$/)?.[0] ?? "{}") as { candidates?: Array<{ recordId: string }> };
+      return {
+        content: JSON.stringify({ action: "merge", targetRecordId: payload.candidates?.[0]?.recordId }),
+        toolCalls: [],
+      };
+    },
+  };
+  const service = await createMemoryService(db, llm as any, {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  });
+
+  try {
+    await service.saveMemory({ userId: "u1", text: "User prefers short replies.", importance: 4 });
+    await service.saveMemory({ userId: "u1", text: "User prefers terse replies.", importance: 4 });
+
+    const atomCount = (db.query(`SELECT COUNT(*) AS count FROM memory_atoms WHERE user_id = ?`).get("u1") as { count: number }).count;
+    const storeRows = db.query(`SELECT content FROM memory_store_l1 WHERE user_id = ? ORDER BY record_id ASC`).all("u1") as Array<{ content: string }>;
+
+    expect(atomCount).toBe(1);
+    expect(storeRows).toHaveLength(1);
+    expect(storeRows[0]?.content).toBe("User prefers short replies.");
+  } finally {
+    db.close();
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}, 20000);
+
+test("createMemoryService restart refreshes stale generic scene profiles after compaction", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-scene-refresh-"));
+  const dbPath = join(tempDir, "agent.db");
+  const config = {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  };
+
+  try {
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      const service = await createMemoryService(db, fakeLlm, config);
+      await service.saveMemory({ userId: "u1", text: "User wants the assistant's name to be Winter.", importance: 4 });
+      await service.saveMemory({ userId: "u1", text: "User wants the assistant's name to be Winter (user corrects: 'remember ur name is Winter').", importance: 4 });
+      db.query(`
+        UPDATE memory_store_profiles
+        SET content = ?, content_md5 = ?, updated_at_ms = ?
+        WHERE id = ?
+      `).run(
+        "# Scene: generic memory\n\n- [4] User wants the assistant's name to be Winter.\n- [4] User wants the assistant's name to be Winter (user corrects: 'remember ur name is Winter').",
+        "stale-scene",
+        1,
+        "scene:u1:generic-memory",
+      );
+      db.close();
+    }
+
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      await createMemoryService(db, fakeLlm, config);
+
+      const row = db.query(`SELECT content FROM memory_store_profiles WHERE id = ?`).get("scene:u1:generic-memory") as { content: string } | null;
+      const bulletCount = (row?.content.match(/^- \[4\]/gm) ?? []).length;
+
+      expect(bulletCount).toBe(1);
+      db.close();
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+  }
+}, 20000);
+
+test("createMemoryService falls back to plain generic save when semantic dedupe fails", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-dedupe-fallback-"));
+  const db = new Database(":memory:");
+  migrate(db);
+  const llm = {
+    async complete() {
+      throw new Error("dedupe offline");
+    },
+  };
+  const service = await createMemoryService(db, llm as any, {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  });
+
+  try {
+    await service.saveMemory({ userId: "u1", text: "User prefers short replies.", importance: 4 });
+    await expect(service.saveMemory({ userId: "u1", text: "User prefers terse replies.", importance: 4 })).resolves.toBeGreaterThan(0);
+
+    const atomCount = (db.query(`SELECT COUNT(*) AS count FROM memory_atoms WHERE user_id = ?`).get("u1") as { count: number }).count;
+    const storeCount = (db.query(`SELECT COUNT(*) AS count FROM memory_store_l1 WHERE user_id = ?`).get("u1") as { count: number }).count;
+
+    expect(atomCount).toBe(2);
+    expect(storeCount).toBe(2);
+  } finally {
+    db.close();
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}, 20000);
+
+test("createMemoryService restart keeps meaningful trailing parentheticals distinct", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-parenthetical-safety-"));
+  const dbPath = join(tempDir, "agent.db");
+  const config = {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  };
+
+  try {
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      const service = await createMemoryService(db, fakeLlm, config);
+      await service.saveMemory({ userId: "u1", text: "User lives in Paris (Texas).", importance: 4 });
+      await service.saveMemory({ userId: "u1", text: "User lives in Paris.", importance: 4 });
+      db.close();
+    }
+
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      await createMemoryService(db, fakeLlm, config);
+
+      const atomCount = (db.query(`SELECT COUNT(*) AS count FROM memory_atoms WHERE user_id = ?`).get("u1") as { count: number }).count;
+      const storeCount = (db.query(`SELECT COUNT(*) AS count FROM memory_store_l1 WHERE user_id = ?`).get("u1") as { count: number }).count;
+
+      expect(atomCount).toBe(2);
+      expect(storeCount).toBe(2);
+      db.close();
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+  }
+}, 20000);
+
+test("createMemoryService semantic skip does not create fallback legacy store rows", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-skip-no-fallback-"));
+  const db = new Database(":memory:");
+  migrate(db);
+  const llm = {
+    async complete({ messages }: { messages: Array<{ role: string; content?: string }> }) {
+      const system = String(messages[0]?.content ?? "");
+      if (!system.includes("L1 semantic dedupe decision step")) {
+        throw new Error(`Unexpected LLM call: ${system}`);
+      }
+      const prompt = String(messages[1]?.content ?? "");
+      const payload = JSON.parse(prompt.match(/\{[\s\S]*\}$/)?.[0] ?? "{}") as { candidates?: Array<{ recordId: string }> };
+      return {
+        content: JSON.stringify({ action: "skip", targetRecordId: payload.candidates?.[0]?.recordId }),
+        toolCalls: [],
+      };
+    },
+  };
+  const service = await createMemoryService(db, llm as any, {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  });
+
+  try {
+    await service.saveMemory({ userId: "u1", text: "User prefers short replies.", importance: 4 });
+    await service.saveMemory({ userId: "u1", text: "User prefers terse replies.", importance: 4 });
+
+    const atomCount = (db.query(`SELECT COUNT(*) AS count FROM memory_atoms WHERE user_id = ?`).get("u1") as { count: number }).count;
+    const storeRecordIds = (db.query(`SELECT record_id FROM memory_store_l1 WHERE user_id = ? ORDER BY record_id ASC`).all("u1") as Array<{ record_id: string }>)
+      .map((row) => row.record_id);
+
+    expect(atomCount).toBe(1);
+    expect(storeRecordIds).toHaveLength(1);
+    expect(storeRecordIds[0]?.startsWith("store:l1:")).toBe(true);
+  } finally {
+    db.close();
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}, 20000);
+
 test("MemoryService.saveMemory writes to IMemoryStore before backend compatibility mirror", async () => {
   const { tempDir, backend, store } = await createMemory();
   const calls: string[] = [];
@@ -315,7 +634,7 @@ test("store-backed memoryStatus reflects store L1/L2/L3 data", async () => {
     const status = await service.memoryStatus("u1", "c1");
 
     expect(status).toContain("L1 atoms=1");
-    expect(status).toContain("L2 scenarios=1");
+    expect(status).toContain("L2 scenarios=2");
     expect(status).toContain("L3 persona=yes");
   } finally {
     await rm(tempDir, { recursive: true, force: true });

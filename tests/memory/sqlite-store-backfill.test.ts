@@ -67,9 +67,16 @@ test("backfillLegacy migrates legacy conversations, atoms, scenarios, and person
   ]);
 
   const profiles = await store.pullProfiles();
-  expect(profiles).toHaveLength(2);
-  expect(profiles.map((profile) => profile.id)).toEqual(["legacy:l2:31", "legacy:l3:user-1"]);
-  expect(profiles[0]).toMatchObject({
+  expect(profiles).toHaveLength(3);
+  expect(profiles.map((profile) => profile.id)).toEqual(expect.arrayContaining(["scene:user-1:legacy-memory-atom", "legacy:l2:31", "legacy:l3:user-1"]));
+  expect(profiles.find((profile) => profile.id === "scene:user-1:legacy-memory-atom")).toMatchObject({
+    type: "l2",
+    userId: "user-1",
+    filename: "scene-legacy-memory-atom.md",
+    content: "# Scene: legacy memory atom\n\n- [8] Ada likes espresso.",
+    metadata: { sceneName: "legacy memory atom", recordIds: ["legacy:l1:21"], atomIds: [11] },
+  });
+  expect(profiles.find((profile) => profile.id === "legacy:l2:31")).toMatchObject({
     type: "l2",
     userId: "user-1",
     filename: "scenario-31.md",
@@ -79,7 +86,7 @@ test("backfillLegacy migrates legacy conversations, atoms, scenarios, and person
     updatedAtMs: Date.parse("2026-05-18T08:04:00.000Z"),
     metadata: { legacyId: 31, title: "Coffee preferences", atomIds: [21], filePath: "memory/scenarios/coffee.md" },
   });
-  expect(profiles[1]).toMatchObject({
+  expect(profiles.find((profile) => profile.id === "legacy:l3:user-1")).toMatchObject({
     type: "l3",
     userId: "user-1",
     filename: "persona-user-1.md",
@@ -89,11 +96,10 @@ test("backfillLegacy migrates legacy conversations, atoms, scenarios, and person
     updatedAtMs: Date.parse("2026-05-18T08:05:00.000Z"),
     metadata: { sourceScenarioIds: [31] },
   });
-  expect(profiles[0]?.contentMd5).toHaveLength(32);
-  expect(profiles[1]?.contentMd5).toHaveLength(32);
+  expect(profiles.every((profile) => profile.contentMd5.length === 32)).toBe(true);
 
   expect(db.query("SELECT COUNT(*) AS count FROM memory_store_l0").get()).toEqual({ count: 1 });
   expect(db.query("SELECT COUNT(*) AS count FROM memory_store_l1").get()).toEqual({ count: 1 });
-  expect(db.query("SELECT COUNT(*) AS count FROM memory_store_profiles").get()).toEqual({ count: 2 });
+  expect(db.query("SELECT COUNT(*) AS count FROM memory_store_profiles").get()).toEqual({ count: 3 });
   expect(db.query("SELECT value FROM memory_store_meta WHERE key = 'backfill.version'").get()).toEqual({ value: "1" });
 }, 20000);

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { EventMeta } from "../../core/types";
 import type { L0Record, L1Record, ProfileSyncRecord } from "../../core/store/types";
+import { buildSceneProfiles } from "../../pipeline/l2-scenes";
 import { canonicalizeMemoryAtomText, mergeNumberSets } from "./canonical";
 import type { SqliteMemoryStore } from "./store";
 
@@ -51,6 +52,61 @@ function hasTable(db: Database, tableName: string): boolean {
   return row?.present === 1;
 }
 
+function mergeL1Records(preferred: L1Record, duplicate: L1Record): L1Record {
+  return {
+    recordId: preferred.recordId,
+    userId: preferred.userId,
+    sessionKey: preferred.sessionKey,
+    sessionId: preferred.sessionId,
+    content: preferred.content,
+    type: preferred.type,
+    priority: Math.max(preferred.priority, duplicate.priority),
+    sceneName: preferred.sceneName,
+    timestampStr: laterIso(preferred.timestampStr, duplicate.timestampStr),
+    timestampStart: earlierIso(preferred.timestampStart ?? preferred.createdTime, duplicate.timestampStart ?? duplicate.createdTime),
+    timestampEnd: laterIso(preferred.timestampEnd ?? preferred.updatedTime, duplicate.timestampEnd ?? duplicate.updatedTime),
+    sourceConversationIds: mergeNumberSets(preferred.sourceConversationIds, duplicate.sourceConversationIds),
+    metadata: { ...(duplicate.metadata ?? {}), ...(preferred.metadata ?? {}) },
+    createdTime: earlierIso(preferred.createdTime, duplicate.createdTime),
+    updatedTime: laterIso(preferred.updatedTime, duplicate.updatedTime),
+  };
+}
+
+async function compactExistingL1StoreRecords(store: SqliteMemoryStore): Promise<void> {
+  const records = await store.queryL1Records({ limit: Number.MAX_SAFE_INTEGER });
+  const groups = new Map<string, L1Record[]>();
+
+  for (const record of records) {
+    const key = `${record.userId}\0${record.type}\0${canonicalizeMemoryAtomText(record.content)}`;
+    groups.set(key, [...(groups.get(key) ?? []), record]);
+  }
+
+  for (const group of groups.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    const [preferred, ...duplicates] = group;
+    let merged = preferred!;
+    for (const duplicate of duplicates) {
+      merged = mergeL1Records(merged, duplicate);
+    }
+    await store.upsertL1(merged);
+    await store.deleteL1Batch(duplicates.map((duplicate) => duplicate.recordId));
+  }
+}
+
+async function buildAllSceneProfiles(store: SqliteMemoryStore): Promise<ProfileSyncRecord[]> {
+  const records = await store.queryL1Records({ type: "L1", limit: Number.MAX_SAFE_INTEGER });
+  const recordsByUser = new Map<string, L1Record[]>();
+
+  for (const record of records) {
+    recordsByUser.set(record.userId, [...(recordsByUser.get(record.userId) ?? []), record]);
+  }
+
+  return [...recordsByUser.entries()].flatMap(([userId, userRecords]) => buildSceneProfiles(userId, userRecords));
+}
+
 export async function backfillLegacyMemoryStore(db: Database, store: SqliteMemoryStore): Promise<void> {
   const conversations = hasTable(db, "conversations")
     ? db.query(`
@@ -82,6 +138,8 @@ export async function backfillLegacyMemoryStore(db: Database, store: SqliteMemor
       metadata: { ...parseJsonObject(row.meta_json), legacyId: row.id },
     });
   }
+
+  await compactExistingL1StoreRecords(store);
 
   const atoms = hasTable(db, "memory_atoms")
     ? db.query(`
@@ -234,7 +292,7 @@ export async function backfillLegacyMemoryStore(db: Database, store: SqliteMemor
     });
   }
 
-  await store.syncProfiles(profiles);
+  await store.syncProfiles([...profiles, ...(await buildAllSceneProfiles(store))]);
   db.query(`
     INSERT INTO memory_store_meta (key, value, updated_at)
     VALUES ('backfill.version', ?, ?)

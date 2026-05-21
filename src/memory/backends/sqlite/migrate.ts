@@ -73,11 +73,15 @@ function rewriteScenarioAtomIds(db: Database, userId: string, loserId: number, w
 
 function backfillCanonicalText(db: Database): void {
   const rows = db
-    .query(`SELECT id, text FROM memory_atoms WHERE canonical_text IS NULL OR canonical_text = '' ORDER BY id ASC`)
-    .all() as Array<{ id: number; text: string }>;
+    .query(`SELECT id, text, canonical_text FROM memory_atoms ORDER BY id ASC`)
+    .all() as Array<{ id: number; text: string; canonical_text: string | null }>;
 
   for (const row of rows) {
-    db.query(`UPDATE memory_atoms SET canonical_text = ? WHERE id = ?`).run(canonicalizeMemoryAtomText(row.text), row.id);
+    const canonicalText = canonicalizeMemoryAtomText(row.text);
+    if (row.canonical_text === canonicalText) {
+      continue;
+    }
+    db.query(`UPDATE memory_atoms SET canonical_text = ? WHERE id = ?`).run(canonicalText, row.id);
   }
 }
 

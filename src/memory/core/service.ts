@@ -6,6 +6,8 @@ import { emitTrace, NEW_MEMORY_STACK_TAG } from "../../logging/helpers";
 import type { RuntimeTraceEmitter } from "../../logging/types";
 import { generateL4Skill, validateGeneratedSkill, writeDraftSkill } from "../offload/l4";
 import { truncateText } from "../../utils/text";
+import { buildSceneProfiles } from "../pipeline/l2-scenes";
+import { resolveL1Conflict } from "../pipeline/l1-dedupe";
 import type { MemoryBackend } from "./backend";
 import { canonicalizeMemoryAtomText, mergeNumberSets } from "./canonical";
 import type { IMemoryStore, L1Record, ProfileRecord } from "./store/types";
@@ -175,6 +177,38 @@ async function buildGenericStoreL1Record(store: IMemoryStore, input: SaveMemoryI
     createdTime: existing?.createdTime ?? now,
     updatedTime: now,
   };
+}
+
+function mergeGenericStoreL1Record(preferred: L1Record, candidate: L1Record): L1Record {
+  return {
+    recordId: preferred.recordId,
+    userId: preferred.userId,
+    sessionKey: preferred.sessionKey,
+    sessionId: preferred.sessionId,
+    content: preferred.content,
+    type: preferred.type,
+    priority: Math.max(preferred.priority, candidate.priority),
+    sceneName: preferred.sceneName,
+    timestampStr: candidate.timestampStr,
+    timestampStart: preferred.timestampStart ?? preferred.createdTime,
+    timestampEnd: candidate.timestampEnd ?? candidate.updatedTime,
+    sourceConversationIds: mergeNumberSets(preferred.sourceConversationIds, candidate.sourceConversationIds),
+    metadata: { ...(preferred.metadata ?? {}), ...(candidate.metadata ?? {}) },
+    createdTime: preferred.createdTime,
+    updatedTime: candidate.updatedTime,
+  };
+}
+
+async function syncSceneProfilesForUser(store: IMemoryStore, userId: string): Promise<void> {
+  if (!store.syncProfiles) {
+    return;
+  }
+
+  const records = await store.queryL1Records({ userId, type: "L1", limit: Number.MAX_SAFE_INTEGER });
+  const sceneProfiles = buildSceneProfiles(userId, records);
+  if (sceneProfiles.length > 0) {
+    await store.syncProfiles(sceneProfiles);
+  }
 }
 
 function getState(service: MemoryService): MemoryServiceState {
@@ -375,22 +409,55 @@ export class MemoryService {
   }
 
   async saveMemory(input: SaveMemoryInput): Promise<number> {
-    const { backend, store } = getState(this);
+    const { backend, llm, store } = getState(this);
     let stored = false;
+    let storeHandled = false;
+    let backendText = input.text;
+    let backendImportance = input.importance;
+    let backendSourceConversationIds = input.sourceConversationIds;
 
     if (store) {
-      stored = await store.upsertL1(await buildGenericStoreL1Record(store, input));
+      const draft = await buildGenericStoreL1Record(store, input);
+      const candidates = await store.queryL1Records({ userId: input.userId, type: input.sourceLayer ?? "L1", limit: Number.MAX_SAFE_INTEGER });
+      let conflict: Awaited<ReturnType<typeof resolveL1Conflict>> = { action: "store" };
+
+      if (candidates.length > 0) {
+        try {
+          conflict = await resolveL1Conflict({ llm, newRecord: draft, candidates });
+        } catch {
+          conflict = { action: "store" };
+        }
+      }
+
+      const target = conflict.action === "update" || conflict.action === "merge" || conflict.action === "skip"
+        ? candidates.find((candidate) => candidate.recordId === conflict.targetRecordId)
+        : undefined;
+
+      if (conflict.action === "skip" && !target) {
+        return 0;
+      }
+
+      const record = target ? mergeGenericStoreL1Record(target, draft) : draft;
+      backendText = target?.content ?? draft.content;
+      backendImportance = record.priority;
+      backendSourceConversationIds = record.sourceConversationIds;
+
+      if (conflict.action !== "skip") {
+        stored = await store.upsertL1(record);
+        await syncSceneProfilesForUser(store, input.userId);
+      }
+      storeHandled = true;
     }
 
     const result = await backend.upsertMemoryAtom({
       userId: input.userId,
-      text: input.text,
-      importance: input.importance,
-      sourceConversationIds: input.sourceConversationIds,
+      text: backendText,
+      importance: backendImportance,
+      sourceConversationIds: backendSourceConversationIds,
       sourceLayer: input.sourceLayer,
     });
 
-    if (store && !stored) {
+    if (store && !stored && !storeHandled) {
       await store.upsertL1({
         recordId: `legacy:l1:${result.atom.id}`,
         userId: result.atom.userId,
@@ -408,6 +475,7 @@ export class MemoryService {
         createdTime: result.atom.createdAt,
         updatedTime: result.atom.updatedAt,
       });
+      await syncSceneProfilesForUser(store, input.userId);
     }
 
     return result.atom.id;
