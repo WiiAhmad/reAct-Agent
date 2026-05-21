@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { EventMeta } from "../../core/types";
 import type { L0Record, L1Record, ProfileSyncRecord } from "../../core/store/types";
+import { canonicalizeMemoryAtomText, mergeNumberSets } from "./canonical";
 import type { SqliteMemoryStore } from "./store";
 
 function md5(content: string): string {
@@ -29,6 +30,14 @@ function parseNumberArray(raw: string): number[] {
 function timestampMs(iso: string, fallback: number): number {
   const parsed = Date.parse(iso);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function earlierIso(left: string, right: string): string {
+  return timestampMs(left, Number.MAX_SAFE_INTEGER) <= timestampMs(right, Number.MAX_SAFE_INTEGER) ? left : right;
+}
+
+function laterIso(left: string, right: string): string {
+  return timestampMs(left, 0) >= timestampMs(right, 0) ? left : right;
 }
 
 function sessionKey(chatId: string, userId: string): string {
@@ -91,9 +100,55 @@ export async function backfillLegacyMemoryStore(db: Database, store: SqliteMemor
       }>
     : [];
 
+  const l1RecordsByScope = new Map<string, Awaited<ReturnType<typeof store.queryL1Records>>>();
+
   for (const row of atoms) {
+    const recordId = `legacy:l1:${row.id}`;
+    const canonicalText = canonicalizeMemoryAtomText(row.text);
+    const scopeKey = `${row.user_id}\0${row.source_layer}`;
+    let existingRecords = l1RecordsByScope.get(scopeKey);
+
+    if (!existingRecords) {
+      existingRecords = await store.queryL1Records({ userId: row.user_id, type: row.source_layer, limit: Number.MAX_SAFE_INTEGER });
+      l1RecordsByScope.set(scopeKey, existingRecords);
+    }
+
+    const preferredIndex = existingRecords.findIndex((record) =>
+      record.recordId !== recordId && canonicalizeMemoryAtomText(record.content) === canonicalText,
+    );
+
+    if (preferredIndex >= 0) {
+      const preferredRecord = existingRecords[preferredIndex]!;
+      const mergedRecord: L1Record = {
+        recordId: preferredRecord.recordId,
+        userId: preferredRecord.userId,
+        sessionKey: preferredRecord.sessionKey,
+        sessionId: preferredRecord.sessionId,
+        content: preferredRecord.content,
+        type: preferredRecord.type,
+        priority: Math.max(preferredRecord.priority, row.importance),
+        sceneName: preferredRecord.sceneName,
+        timestampStr: laterIso(preferredRecord.timestampStr, row.updated_at),
+        timestampStart: earlierIso(preferredRecord.timestampStart ?? preferredRecord.createdTime, row.created_at),
+        timestampEnd: laterIso(preferredRecord.timestampEnd ?? preferredRecord.updatedTime, row.updated_at),
+        sourceConversationIds: mergeNumberSets(preferredRecord.sourceConversationIds, parseNumberArray(row.source_turn_ids_json)),
+        metadata: preferredRecord.metadata,
+        createdTime: earlierIso(preferredRecord.createdTime, row.created_at),
+        updatedTime: laterIso(preferredRecord.updatedTime, row.updated_at),
+      };
+      await store.upsertL1(mergedRecord);
+      existingRecords[preferredIndex] = mergedRecord;
+
+      const legacyIndex = existingRecords.findIndex((record) => record.recordId === recordId);
+      if (legacyIndex >= 0) {
+        await store.deleteL1(recordId);
+        existingRecords.splice(legacyIndex, 1);
+      }
+      continue;
+    }
+
     const record: L1Record = {
-      recordId: `legacy:l1:${row.id}`,
+      recordId,
       userId: row.user_id,
       sessionKey: `legacy:${row.user_id}`,
       sessionId: "legacy",
@@ -110,6 +165,7 @@ export async function backfillLegacyMemoryStore(db: Database, store: SqliteMemor
       updatedTime: row.updated_at,
     };
     await store.upsertL1(record);
+    existingRecords.push(record);
   }
 
   const profiles: ProfileSyncRecord[] = [];

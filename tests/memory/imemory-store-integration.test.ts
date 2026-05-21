@@ -139,6 +139,124 @@ test("createMemoryService wires a store-backed MemoryService for generic save an
   }
 }, 20000);
 
+test("createMemoryService restart does not duplicate store L1 records during legacy backfill", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-restart-"));
+  const dbPath = join(tempDir, "agent.db");
+  const config = {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  };
+
+  try {
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      const service = await createMemoryService(db, fakeLlm, config);
+      await service.saveMemory({ userId: "u1", text: "User prefers Bun runtime", importance: 6 });
+
+      const recordIds = (db.query(`SELECT record_id FROM memory_store_l1 WHERE user_id = ? ORDER BY record_id ASC`).all("u1") as Array<{ record_id: string }>)
+        .map((row) => row.record_id);
+
+      expect(recordIds).toHaveLength(1);
+      expect(recordIds[0]?.startsWith("store:l1:")).toBe(true);
+      db.close();
+    }
+
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      await createMemoryService(db, fakeLlm, config);
+
+      const recordIds = (db.query(`SELECT record_id FROM memory_store_l1 WHERE user_id = ? ORDER BY record_id ASC`).all("u1") as Array<{ record_id: string }>)
+        .map((row) => row.record_id);
+
+      expect(recordIds).toHaveLength(1);
+      expect(recordIds[0]?.startsWith("store:l1:")).toBe(true);
+      expect(recordIds.some((recordId) => recordId.startsWith("legacy:l1:"))).toBe(false);
+      db.close();
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+  }
+}, 20000);
+
+test("createMemoryService restart merges legacy L1 evidence into canonical store records", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-imemory-restart-merge-"));
+  const dbPath = join(tempDir, "agent.db");
+  const config = {
+    storage: {
+      dataDir: tempDir,
+      memoryRefsDir: join(tempDir, "refs"),
+      memoryCanvasDir: join(tempDir, "canvases"),
+      memoryJsonlExportDir: join(tempDir, "jsonl"),
+      historyDir: join(tempDir, "history"),
+      memoryTaskCanvasDir: join(tempDir, "task-canvases"),
+      memoryGeneratedSkillsDir: join(tempDir, "generated-skills"),
+    },
+    memory: {
+      maintenanceCron: "0 * * * *",
+      retentionDays: 30,
+      offloadEnabled: true,
+      offloadMinChars: 2500,
+      offloadSummaryChars: 900,
+      sqliteVecEnabled: false,
+      jsonlExportEnabled: false,
+    },
+  };
+
+  try {
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      const service = await createMemoryService(db, fakeLlm, config);
+      await service.saveMemory({ userId: "u1", text: "User prefers Bun runtime", importance: 4 });
+      db.query(`
+        UPDATE memory_atoms
+        SET importance = ?, source_turn_ids_json = ?, updated_at = ?
+        WHERE user_id = ? AND text = ?
+      `).run(6, "[42]", "2026-05-18T09:00:00.000Z", "u1", "User prefers Bun runtime");
+      db.close();
+    }
+
+    {
+      const db = new Database(dbPath);
+      migrate(db);
+      await createMemoryService(db, fakeLlm, config);
+
+      const rows = db.query(`
+        SELECT record_id, priority, source_conversation_ids_json
+        FROM memory_store_l1
+        WHERE user_id = ?
+        ORDER BY record_id ASC
+      `).all("u1") as Array<{ record_id: string; priority: number; source_conversation_ids_json: string }>;
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.record_id.startsWith("store:l1:")).toBe(true);
+      expect(rows[0]?.priority).toBe(6);
+      expect(JSON.parse(rows[0]?.source_conversation_ids_json ?? "[]")).toEqual([42]);
+      db.close();
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+  }
+}, 20000);
+
 test("MemoryService.saveMemory writes to IMemoryStore before backend compatibility mirror", async () => {
   const { tempDir, backend, store } = await createMemory();
   const calls: string[] = [];
