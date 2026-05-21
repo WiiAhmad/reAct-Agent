@@ -25,12 +25,14 @@ export function buildStartKeyboard() {
   return new InlineKeyboard().text("Menu", uiCallbacks.menu).text("Help", uiCallbacks.help);
 }
 
-export function buildMainMenuKeyboard() {
-  return new InlineKeyboard()
-    .text("Memory", uiCallbacks.memory)
-    .text("Jobs", uiCallbacks.jobs)
-    .row()
-    .text("Help", uiCallbacks.help);
+export function buildMainMenuKeyboard(options?: { isPrivateChat?: boolean }) {
+  const keyboard = new InlineKeyboard();
+
+  if (options?.isPrivateChat ?? true) {
+    keyboard.text("Memory", uiCallbacks.memory);
+  }
+
+  return keyboard.text("Jobs", uiCallbacks.jobs).row().text("Help", uiCallbacks.help);
 }
 
 export function buildMemorySummaryKeyboard() {
@@ -49,7 +51,7 @@ export function buildJobsKeyboard() {
     .text("Back", uiCallbacks.back);
 }
 
-export function buildHelpKeyboard() {
+export function buildHelpKeyboard(_options?: { isPrivateChat?: boolean }) {
   return new InlineKeyboard().text("Menu", uiCallbacks.menu);
 }
 

@@ -32,13 +32,39 @@ function resolveUserId(ctx: Context) {
   return String(ctx.from?.id ?? ctx.chat?.id ?? "unknown");
 }
 
-async function chooseSchedule(conversation: BotConversation, ctx: Context) {
+async function waitForActorCallbackData(
+  conversation: BotConversation,
+  actorId: string,
+  isExpectedData: (data: string | undefined) => boolean,
+) {
+  while (true) {
+    const action = await waitForCallbackData(conversation, isExpectedData);
+    if (resolveUserId(action) !== actorId) {
+      await action.answerCallbackQuery();
+      continue;
+    }
+    return action;
+  }
+}
+
+async function waitForActorTextInput(conversation: BotConversation, actorId: string) {
+  while (true) {
+    const messageCtx = await waitForTextInput(conversation);
+    if (resolveUserId(messageCtx) !== actorId) {
+      await conversation.skip({ next: true });
+      continue;
+    }
+    return messageCtx;
+  }
+}
+
+async function chooseSchedule(conversation: BotConversation, ctx: Context, actorId: string) {
   while (true) {
     await ctx.reply("Pilih jadwal untuk autonomous job:", {
       reply_markup: buildSchedulePresetKeyboard(),
     });
 
-    const choice = await waitForCallbackData(conversation, isScheduleCallbackData);
+    const choice = await waitForActorCallbackData(conversation, actorId, isScheduleCallbackData);
     await choice.answerCallbackQuery();
 
     switch (choice.callbackQuery.data) {
@@ -57,7 +83,7 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
       case uiCallbacks.customCron: {
         while (true) {
           await ctx.reply("Kirim cron expression untuk autonomous job.");
-          const cronCtx = await waitForTextInput(conversation);
+          const cronCtx = await waitForActorTextInput(conversation, actorId);
           const cronExpr = cronCtx.message.text.trim();
           if (!cronExpr) {
             await cronCtx.reply("Cron expression tidak boleh kosong.");
@@ -89,14 +115,14 @@ export function createJobCreateConversation(deps: JobCreateConversationDeps) {
     let prompt = "";
 
     while (!prompt) {
-      const promptCtx = await waitForTextInput(conversation);
+      const promptCtx = await waitForActorTextInput(conversation, userId);
       prompt = promptCtx.message.text.trim();
       if (!prompt) {
         await promptCtx.reply("Prompt tidak boleh kosong.");
       }
     }
 
-    const schedule = await chooseSchedule(conversation, ctx);
+    const schedule = await chooseSchedule(conversation, ctx, userId);
     if (!schedule) {
       await ctx.reply("Pembuatan autonomous job dibatalkan.");
       return;

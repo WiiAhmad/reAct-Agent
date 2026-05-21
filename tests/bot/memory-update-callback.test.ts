@@ -17,10 +17,60 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+function scheduleLabelFromInput(schedule: { scheduleMode: "interval" | "cron"; intervalSec?: number; cronExpr?: string }) {
+  if (schedule.scheduleMode === "cron") {
+    return schedule.cronExpr ?? "custom";
+  }
+
+  switch (schedule.intervalSec) {
+    case 600:
+      return "10m";
+    case 1800:
+      return "30m";
+    case 3600:
+      return "1h";
+    case 21600:
+      return "6h";
+    case 43200:
+      return "12h";
+    case 86400:
+      return "24h";
+    default:
+      return "custom";
+  }
+}
+
 function createMemoryUpdateDeps() {
   const maintenanceCalls: Array<{ userId: string; force: boolean; source?: string }> = [];
   const maintenance = createDeferred<{ l1Created: number; l2ScenarioId?: number; personaUpdated: boolean }>();
   const settingsRuns: Array<{ event: "started" | "finished"; userId: string; status?: string | null }> = [];
+  let currentSetting: {
+    userId: string;
+    enabled: boolean;
+    scheduleMode: "interval" | "cron";
+    intervalSec: number | null;
+    cronExpr: string | null;
+    lastRunAt: number | null;
+    lastFinishedAt: number | null;
+    lastStatus: string | null;
+    lastError: string | null;
+    createdAt: string;
+    updatedAt: string;
+    scheduleLabel: string;
+  } = {
+    userId: "42",
+    enabled: true,
+    scheduleMode: "interval",
+    intervalSec: 600,
+    cronExpr: null,
+    lastRunAt: null,
+    lastFinishedAt: null,
+    lastStatus: null,
+    lastError: null,
+    createdAt: "2026-05-18T00:00:00.000Z",
+    updatedAt: "2026-05-18T00:00:00.000Z",
+    scheduleLabel: "10m",
+  };
 
   return {
     maintenance,
@@ -37,25 +87,32 @@ function createMemoryUpdateDeps() {
       },
       memoryUpdateSettings: {
         getOrCreate: (userId: string) => ({
+          ...currentSetting,
           userId,
-          enabled: true,
-          scheduleMode: "interval",
-          intervalSec: 600,
-          cronExpr: null,
-          lastRunAt: null,
-          lastFinishedAt: null,
-          lastStatus: null,
-          lastError: null,
-          createdAt: "2026-05-18T00:00:00.000Z",
-          updatedAt: "2026-05-18T00:00:00.000Z",
-          scheduleLabel: "10m",
         }),
+        updateSchedule: (userId: string, schedule: { scheduleMode: "interval" | "cron"; intervalSec?: number; cronExpr?: string }) => {
+          currentSetting = {
+            ...currentSetting,
+            userId,
+            scheduleMode: schedule.scheduleMode,
+            intervalSec: schedule.intervalSec ?? null,
+            cronExpr: schedule.cronExpr ?? null,
+            scheduleLabel: scheduleLabelFromInput(schedule),
+          };
+          return currentSetting;
+        },
         markRunStarted: (userId: string) => {
           settingsRuns.push({ event: "started", userId });
         },
         markRunFinished: (userId: string, _finishedAt: number, status: string, _error: string | null) => {
           settingsRuns.push({ event: "finished", userId, status });
-          return { userId, enabled: true, scheduleLabel: "10m", lastStatus: status, lastError: null };
+          currentSetting = {
+            ...currentSetting,
+            userId,
+            lastStatus: status,
+            lastError: null,
+          };
+          return currentSetting;
         },
       },
       registry: {} as any,
@@ -196,6 +253,32 @@ async function pressMemoryUpdateRunNow(bot: ReturnType<typeof createTelegramBot>
   } as any);
 }
 
+async function pressMemoryUpdateChangeSchedule(bot: ReturnType<typeof createTelegramBot>) {
+  return bot.handleUpdate({
+    update_id: 6,
+    callback_query: {
+      id: "callback-change-schedule",
+      from: { id: 42, is_bot: false, first_name: "User" },
+      message: { message_id: 10, date: 1, chat: { id: 99, type: "private" } },
+      chat_instance: "chat-instance",
+      data: memoryUpdateCallbacks.changeSchedule,
+    },
+  } as any);
+}
+
+async function pickMemoryUpdateSchedule(bot: ReturnType<typeof createTelegramBot>, messageId: number, data: string) {
+  return bot.handleUpdate({
+    update_id: 7,
+    callback_query: {
+      id: "callback-schedule-pick",
+      from: { id: 42, is_bot: false, first_name: "User" },
+      message: { message_id: messageId, date: 1, chat: { id: 99, type: "private" } },
+      chat_instance: "chat-instance",
+      data,
+    },
+  } as any);
+}
+
 test("active memory update conversation run-now callback returns quickly and sends background progress", async () => {
   const { bot, apiCalls, maintenance, maintenanceCalls, settingsRuns } = createBotHarness();
 
@@ -231,6 +314,37 @@ test("active memory update conversation run-now callback returns quickly and sen
   expect(apiCalls).toContainEqual({
     method: "sendMessage",
     payload: { chat_id: "99", text: "Memory update selesai. L1=1 atom, L2=scenario #7, L3=updated." },
+  });
+});
+
+test("active memory update conversation deletes the schedule picker after preset selection and refreshes the original menu", async () => {
+  const { bot, apiCalls } = createBotHarness();
+
+  await enterMemoryUpdateConversation(bot);
+  await pressMemoryUpdateChangeSchedule(bot);
+
+  const promptCallIndex = apiCalls.findIndex((call) =>
+    call.method === "sendMessage" &&
+    call.payload.chat_id === 99 &&
+    call.payload.text === "Pilih jadwal untuk Memory Update:"
+  );
+  expect(promptCallIndex).toBeGreaterThan(-1);
+
+  const pickerMessageId = promptCallIndex + 1;
+  await pickMemoryUpdateSchedule(bot, pickerMessageId, uiCallbacks.schedulePreset1h);
+
+  expect(apiCalls).toContainEqual({
+    method: "deleteMessage",
+    payload: { chat_id: 99, message_id: pickerMessageId },
+  });
+  expect(apiCalls).toContainEqual({
+    method: "editMessageText",
+    payload: {
+      chat_id: 99,
+      message_id: 10,
+      text: "Memory Update\nEnabled: yes\nSchedule: 1h\nLast status: never run\nNote: Schedule updated to 1h\nActions:\n- Run now\n- Enable/Disable\n- Change schedule\n- Back",
+      reply_markup: expect.any(Object),
+    },
   });
 });
 

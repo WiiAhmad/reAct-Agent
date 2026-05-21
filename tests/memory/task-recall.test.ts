@@ -58,3 +58,32 @@ test("recall returns active and relevant historical task canvases", async () => 
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("recall only returns the requesting user's active task canvas in a shared chat", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-task-recall-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+      taskCanvasDir: join(tempDir, "task-canvases"),
+    });
+    await backend.init();
+
+    const requesterTask = await backend.createTaskCanvas({ chatId: "shared-chat", userId: "u1", label: "requester-active-task", status: "active" });
+    const otherUserTask = await backend.createTaskCanvas({ chatId: "shared-chat", userId: "u2", label: "other-user-active-task", status: "active" });
+    await writeFile(join(tempDir, requesterTask.filePath), "flowchart TD\n  U1[\"Requester active canvas\"]\n", "utf8");
+    await writeFile(join(tempDir, otherUserTask.filePath), "flowchart TD\n  U2[\"Other user active canvas\"]\n", "utf8");
+
+    const recall = new RecallService(backend, { enabled: true, maxTasks: 3, maxCanvasChars: 2000 });
+    const result = await recall.recall("u1", "shared task", 5, "shared-chat");
+
+    expect(result.taskCanvas).toContain("Requester active canvas");
+    expect(result.taskCanvas).not.toContain("Other user active canvas");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

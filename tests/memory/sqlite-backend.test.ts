@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
@@ -144,6 +144,34 @@ test("SQLite backend stores task offload pipeline records", async () => {
         sourceEvidenceIds: ["evidence-1"],
       }),
     ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite backend reads the active task canvas for the matching user only", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "grammy-memory-"));
+
+  try {
+    const db = new Database(":memory:");
+    migrateSqliteMemory(db);
+
+    const backend = new SqliteMemoryBackend(db, {
+      dataDir: tempDir,
+      refsDir: join(tempDir, "refs"),
+      canvasDir: join(tempDir, "canvases"),
+      taskCanvasDir: join(tempDir, "task-canvases"),
+    });
+    await backend.init();
+
+    const userOneTask = await backend.createTaskCanvas({ chatId: "shared-chat", userId: "u1", label: "user-one-task", status: "active" });
+    const userTwoTask = await backend.createTaskCanvas({ chatId: "shared-chat", userId: "u2", label: "user-two-task", status: "active" });
+    await writeFile(join(tempDir, userOneTask.filePath), "flowchart TD\n  U1[\"User one active canvas\"]\n", "utf8");
+    await writeFile(join(tempDir, userTwoTask.filePath), "flowchart TD\n  U2[\"User two active canvas\"]\n", "utf8");
+
+    expect(await backend.getTaskCanvasForUser("u1", "shared-chat")).toContain("User one active canvas");
+    expect(await backend.getTaskCanvasForUser("u1", "shared-chat")).not.toContain("User two active canvas");
+    expect(await backend.getTaskCanvasForUser("u2", "shared-chat")).toContain("User two active canvas");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -49,6 +49,10 @@ function resolveUserId(ctx: Context) {
   return String(ctx.from?.id ?? ctx.chat?.id ?? "unknown");
 }
 
+function isPrivateChat(ctx: Context) {
+  return ctx.chat?.type === "private";
+}
+
 function normalizeLines(lines: Array<string | false | null | undefined>) {
   return lines.filter(Boolean).join("\n");
 }
@@ -88,6 +92,7 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
 
     const choice = await waitForScheduleCallback(conversation);
     await choice.answerCallbackQuery();
+    await choice.deleteMessage();
 
     switch (choice.callbackQuery.data) {
       case uiCallbacks.schedulePreset10m:
@@ -131,6 +136,10 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
 export function createMemoryUpdateConversation(deps: MemoryUpdateConversationDeps) {
   return async function memoryUpdateConversation(conversation: BotConversation, ctx: Context) {
     const userId = resolveUserId(ctx);
+    if (!isPrivateChat(ctx)) {
+      await ctx.reply("Memory hanya tersedia di private chat.");
+      return;
+    }
     let note: string | undefined;
 
     const render = async (messageCtx: Context) => {

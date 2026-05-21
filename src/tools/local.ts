@@ -241,12 +241,12 @@ export function createLocalTools(memory: MemoryService, telegram?: Api, autonomo
     {
       name: "telegram_send_message",
       source: "local",
-      description: "Send a Telegram message to the current chat or a specified chat_id. Useful in autonomous runs.",
+      description: "Send a Telegram message to the current chat only. Useful in chat mode for explicit follow-up messages in the active conversation.",
       inputSchema: {
         type: "object",
         properties: {
           text: { type: "string" },
-          chat_id: { type: "string", description: "Optional Telegram chat id; defaults to current chat" },
+          chat_id: { type: "string", description: "Optional Telegram chat id; must match the active chat if provided" },
         },
         required: ["text"],
         additionalProperties: false,
@@ -254,10 +254,13 @@ export function createLocalTools(memory: MemoryService, telegram?: Api, autonomo
       async execute(args, ctx) {
         const api = telegram ?? ctx.telegram;
         if (!api) return "Telegram API unavailable.";
-        const chatId = asString(args.chat_id, ctx.chatId);
+        const hasChatId = Object.prototype.hasOwnProperty.call(args, "chat_id");
+        if (hasChatId && typeof args.chat_id !== "string") return "chat_id must match the current chat.";
+        const requestedChatId = hasChatId ? args.chat_id : ctx.chatId;
+        if (requestedChatId !== ctx.chatId) return "chat_id must match the current chat.";
         const text = truncateText(asString(args.text), 3900);
-        await api.sendMessage(chatId, text);
-        return `Sent Telegram message to ${chatId}.`;
+        await api.sendMessage(ctx.chatId, text);
+        return `Sent Telegram message to ${ctx.chatId}.`;
       },
     },
   ];

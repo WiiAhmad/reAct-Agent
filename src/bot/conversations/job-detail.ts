@@ -5,7 +5,6 @@ import { buildSchedulePresetKeyboard, uiCallbacks } from "../ui/keyboards";
 import { renderJobsScreen } from "../ui/renderers";
 import { validateCronExpression } from "../../services/schedules";
 import type { AutonomousJobRow, AutonomousJobService } from "../../services/autonomous-jobs";
-import { waitForCallbackData, waitForTextInput } from "./waits";
 
 export type JobDetailConversationDeps = {
   autonomousJobs: AutonomousJobService;
@@ -42,8 +41,46 @@ function resolveChatId(ctx: Context) {
   return String(ctx.chat?.id ?? "unknown");
 }
 
+function resolveUserId(ctx: Context) {
+  return String(ctx.from?.id ?? ctx.chat?.id ?? "unknown");
+}
+
 function normalizeLines(lines: Array<string | false | null | undefined>) {
   return lines.filter(Boolean).join("\n");
+}
+
+async function waitForActorCallbackData(
+  conversation: BotConversation,
+  actorId: string,
+  isExpectedData: (data: string | undefined) => boolean,
+) {
+  while (true) {
+    const action = await conversation.waitFor("callback_query:data", { next: true });
+    if (!isExpectedData(action.callbackQuery.data)) {
+      await conversation.skip({ next: true });
+      continue;
+    }
+    if (resolveUserId(action) !== actorId) {
+      await action.answerCallbackQuery();
+      continue;
+    }
+    return action;
+  }
+}
+
+async function waitForActorTextInput(conversation: BotConversation, actorId: string) {
+  while (true) {
+    const messageCtx = await conversation.waitFor("message:text", { next: true });
+    if (messageCtx.message.text.startsWith("/")) {
+      await conversation.skip({ next: true });
+      continue;
+    }
+    if (resolveUserId(messageCtx) !== actorId) {
+      await conversation.skip({ next: true });
+      continue;
+    }
+    return messageCtx;
+  }
 }
 
 function buildJobDetailKeyboard(job: AutonomousJobRow) {
@@ -99,13 +136,13 @@ function renderJobsSummary(jobs: AutonomousJobRow[]) {
   return jobs.length ? jobs.map((item) => `#${item.id} ${item.enabled ? "enabled" : "disabled"}\n${item.scheduleLabel}\n${item.prompt}`).join("\n\n") : "Belum ada autonomous jobs.";
 }
 
-async function chooseSchedule(conversation: BotConversation, ctx: Context) {
+async function chooseSchedule(conversation: BotConversation, ctx: Context, actorId: string) {
   while (true) {
     await ctx.reply("Pilih jadwal untuk autonomous job:", {
       reply_markup: buildSchedulePresetKeyboard(),
     });
 
-    const choice = await waitForCallbackData(conversation, isCallbackDataIn(scheduleCallbackData));
+    const choice = await waitForActorCallbackData(conversation, actorId, isCallbackDataIn(scheduleCallbackData));
     await choice.answerCallbackQuery();
 
     switch (choice.callbackQuery.data) {
@@ -124,7 +161,7 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
       case uiCallbacks.customCron: {
         while (true) {
           await ctx.reply("Kirim cron expression untuk autonomous job.");
-          const cronCtx = await waitForTextInput(conversation);
+          const cronCtx = await waitForActorTextInput(conversation, actorId);
           const cronExpr = cronCtx.message.text.trim();
           if (!cronExpr) {
             await cronCtx.reply("Cron expression tidak boleh kosong.");
@@ -150,9 +187,10 @@ async function chooseSchedule(conversation: BotConversation, ctx: Context) {
 export function createJobDetailConversation(deps: JobDetailConversationDeps) {
   return async function jobDetailConversation(conversation: BotConversation, ctx: Context, jobId: number) {
     const chatId = resolveChatId(ctx);
+    const userId = resolveUserId(ctx);
     let note: string | undefined;
 
-    const loadedJob = await conversation.external(() => deps.autonomousJobs.getJobByChat(chatId, jobId));
+    const loadedJob = await conversation.external(() => deps.autonomousJobs.getJobForActor(chatId, userId, jobId));
     if (!loadedJob) {
       await ctx.reply(`Autonomous job #${jobId} tidak ditemukan.`);
       return;
@@ -172,13 +210,13 @@ export function createJobDetailConversation(deps: JobDetailConversationDeps) {
     await render(ctx);
 
     while (true) {
-      const action = await waitForCallbackData(conversation, isCallbackDataIn(jobDetailCallbackData));
+      const action = await waitForActorCallbackData(conversation, userId, isCallbackDataIn(jobDetailCallbackData));
       await action.answerCallbackQuery();
       note = undefined;
 
       switch (action.callbackQuery.data) {
         case jobDetailCallbacks.back: {
-          const jobs = await conversation.external(() => deps.autonomousJobs.listJobsForChat(chatId));
+          const jobs = await conversation.external(() => deps.autonomousJobs.listJobsForActor(chatId, userId));
           await action.editMessageText(renderJobsScreen(renderJobsSummary(jobs)), {
             reply_markup: buildJobsListKeyboard(jobs),
           });
@@ -187,7 +225,7 @@ export function createJobDetailConversation(deps: JobDetailConversationDeps) {
         case jobDetailCallbacks.editPrompt: {
           await action.reply("Kirim prompt baru untuk autonomous job ini.");
           while (true) {
-            const promptCtx = await waitForTextInput(conversation);
+            const promptCtx = await waitForActorTextInput(conversation, userId);
             const prompt = promptCtx.message.text.trim();
             if (!prompt) {
               await promptCtx.reply("Prompt tidak boleh kosong.");
@@ -202,7 +240,7 @@ export function createJobDetailConversation(deps: JobDetailConversationDeps) {
           break;
         }
         case jobDetailCallbacks.changeSchedule: {
-          const schedule = await chooseSchedule(conversation, ctx);
+          const schedule = await chooseSchedule(conversation, ctx, userId);
           if (!schedule) {
             note = "Schedule unchanged.";
             await render(action);
@@ -229,24 +267,21 @@ export function createJobDetailConversation(deps: JobDetailConversationDeps) {
             ]),
             { reply_markup: buildDeleteConfirmKeyboard() },
           );
-          const confirm = await waitForCallbackData(conversation, isCallbackDataIn(deleteConfirmCallbackData));
+          const confirm = await waitForActorCallbackData(conversation, userId, isCallbackDataIn(deleteConfirmCallbackData));
           await confirm.answerCallbackQuery();
 
           if (confirm.callbackQuery.data === jobDetailCallbacks.deleteConfirm) {
             await conversation.external(() => deps.autonomousJobs.deleteJob(currentJob.id));
-            const jobs = await conversation.external(() => deps.autonomousJobs.listJobsForChat(chatId));
+            const jobs = await conversation.external(() => deps.autonomousJobs.listJobsForActor(chatId, userId));
             await confirm.editMessageText(renderJobsScreen(renderJobsSummary(jobs)), {
               reply_markup: buildJobsListKeyboard(jobs),
             });
             return;
           }
 
-          const refreshedJob = await conversation.external(() => deps.autonomousJobs.getJobByChat(chatId, jobId));
+          const refreshedJob = await conversation.external(() => deps.autonomousJobs.getJobForActor(chatId, userId, jobId));
           if (!refreshedJob) {
-            const jobs = await conversation.external(() => deps.autonomousJobs.listJobsForChat(chatId));
-            await confirm.editMessageText(renderJobsScreen(renderJobsSummary(jobs)), {
-              reply_markup: buildJobsListKeyboard(jobs),
-            });
+            await confirm.editMessageText("Autonomous job tidak lagi tersedia.");
             return;
           }
 

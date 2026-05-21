@@ -129,8 +129,8 @@ function createBotHarness(
       markRunFinished: (userId: string, _finishedAt: number, status: string) => ({ userId, enabled: true, scheduleLabel: "10m", lastStatus: status, lastError: null }),
     },
     autonomousJobs: {
-      listJobsForChat: () => jobs,
-      getJobByChat: (_chatId: string, jobId: number) => jobs.find((job) => job.id === jobId) ?? null,
+      listJobsForActor: (_chatId: string, _userId: string) => jobs,
+      getJobForActor: (_chatId: string, _userId: string, jobId: number) => jobs.find((job) => job.id === jobId) ?? null,
       createJob: ({ chatId, userId, prompt, schedule }: any) => {
         const job = { ...baseJob, id: jobs.length + 1, chatId, userId, prompt, ...schedule };
         jobs.push(job);

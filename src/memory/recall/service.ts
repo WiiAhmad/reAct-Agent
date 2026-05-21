@@ -158,7 +158,7 @@ export class RecallService {
       this.store ? Promise.resolve([]) : this.backend.searchMemoryAtomsByVector(userId, query, maxResults),
       this.recallScenarios(userId, query, maxResults),
       this.recallStoreConversations(userId, query, maxResults),
-      chatId ? this.backend.getTaskCanvas(chatId) : Promise.resolve(undefined),
+      chatId ? this.backend.getTaskCanvasForUser(userId, chatId) : Promise.resolve(undefined),
       this.taskRecallOptions.enabled && taskCanvasLimit > 0
         ? this.backend.searchTaskCanvases(userId, query, taskCanvasLimit + 1, chatId)
         : Promise.resolve([]),

@@ -189,6 +189,31 @@ export class AutonomousJobService {
     return row ? mapRow(row) : null;
   }
 
+  getJobForActor(chatId: string, userId: string, id: number): AutonomousJobRow | null {
+    const row = this.db
+      .query(
+        `SELECT${AUTONOMOUS_JOB_COLUMNS}
+         FROM autonomous_jobs
+         WHERE chat_id = ? AND user_id = ? AND id = ?`,
+      )
+      .get(chatId, userId, id) as AutonomousJobDbRow | undefined;
+
+    return row ? mapRow(row) : null;
+  }
+
+  listJobsForActor(chatId: string, userId: string): AutonomousJobRow[] {
+    const rows = this.db
+      .query(
+        `SELECT${AUTONOMOUS_JOB_COLUMNS}
+         FROM autonomous_jobs
+         WHERE chat_id = ? AND user_id = ?
+         ORDER BY id DESC`,
+      )
+      .all(chatId, userId) as AutonomousJobDbRow[];
+
+    return rows.map(mapRow);
+  }
+
   getJobByChat(chatId: string, id: number): AutonomousJobRow | null {
     const row = this.db
       .query(

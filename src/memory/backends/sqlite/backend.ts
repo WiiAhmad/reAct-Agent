@@ -995,6 +995,28 @@ export class SqliteMemoryBackend implements MemoryBackend {
     };
   }
 
+  async getTaskCanvasForUser(userId: string, chatId: string): Promise<string | undefined> {
+    const active = this.db
+      .query(`
+        SELECT file_path
+        FROM memory_task_canvases
+        WHERE user_id = ? AND chat_id = ? AND status = 'active'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `)
+      .get(userId, chatId) as { file_path: string } | null;
+
+    if (!active) {
+      return undefined;
+    }
+
+    try {
+      return await readFile(join(this.options.dataDir, active.file_path), "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+
   async getTaskCanvas(chatId: string): Promise<string | undefined> {
     const active = this.db
       .query(`

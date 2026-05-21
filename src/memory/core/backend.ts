@@ -59,6 +59,7 @@ export interface MemoryBackend {
   createTaskCanvas(task: NewTaskCanvas): Promise<TaskCanvas>;
   getTaskCanvasById(userId: string, taskId: number): Promise<TaskCanvas | undefined>;
   getActiveTaskCanvas(userId: string, chatId: string): Promise<TaskCanvas | undefined>;
+  getTaskCanvasForUser(userId: string, chatId: string): Promise<string | undefined>;
   listTaskCanvases(userId: string, chatId: string, limit: number): Promise<TaskCanvas[]>;
   updateTaskCanvasStatus(taskId: number, status: TaskCanvasStatus): Promise<void>;
   recordL15Judgment(judgment: NewL15Judgment): Promise<L15Judgment>;

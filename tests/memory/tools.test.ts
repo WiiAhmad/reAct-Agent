@@ -282,6 +282,78 @@ test("currentDateTimeSnapshot formats deterministic snapshots with timezone and 
   expect(snapshot.readable_local_datetime.toLowerCase()).toContain("senin");
 });
 
+test("telegram_send_message sends to the active chat when chat_id is omitted", async () => {
+  const memory = createMemoryServiceDouble();
+  const telegram = { sendMessage: mock(async () => undefined) };
+  const tools = createLocalTools(memory as any, telegram as any);
+  const sendMessage = tools.find((tool) => tool.name === "telegram_send_message");
+
+  expect(sendMessage).toBeDefined();
+
+  await expect(
+    sendMessage!.execute(
+      { text: "Hello active chat" },
+      { chatId: "chat-active", userId: "user-1", memory: memory as any },
+    ),
+  ).resolves.toBe("Sent Telegram message to chat-active.");
+
+  expect(telegram.sendMessage).toHaveBeenCalledWith("chat-active", "Hello active chat");
+});
+
+test("telegram_send_message sends to the active chat when matching chat_id is provided", async () => {
+  const memory = createMemoryServiceDouble();
+  const telegram = { sendMessage: mock(async () => undefined) };
+  const tools = createLocalTools(memory as any, telegram as any);
+  const sendMessage = tools.find((tool) => tool.name === "telegram_send_message");
+
+  expect(sendMessage).toBeDefined();
+
+  await expect(
+    sendMessage!.execute(
+      { text: "Hello active chat", chat_id: "chat-active" },
+      { chatId: "chat-active", userId: "user-1", memory: memory as any },
+    ),
+  ).resolves.toBe("Sent Telegram message to chat-active.");
+
+  expect(telegram.sendMessage).toHaveBeenCalledWith("chat-active", "Hello active chat");
+});
+
+test("telegram_send_message rejects cross-chat chat_id", async () => {
+  const memory = createMemoryServiceDouble();
+  const telegram = { sendMessage: mock(async () => undefined) };
+  const tools = createLocalTools(memory as any, telegram as any);
+  const sendMessage = tools.find((tool) => tool.name === "telegram_send_message");
+
+  expect(sendMessage).toBeDefined();
+
+  await expect(
+    sendMessage!.execute(
+      { text: "Hello other chat", chat_id: "chat-other" },
+      { chatId: "chat-active", userId: "user-1", memory: memory as any },
+    ),
+  ).resolves.toBe("chat_id must match the current chat.");
+
+  expect(telegram.sendMessage).not.toHaveBeenCalled();
+});
+
+test("telegram_send_message rejects malformed explicit chat_id", async () => {
+  const memory = createMemoryServiceDouble();
+  const telegram = { sendMessage: mock(async () => undefined) };
+  const tools = createLocalTools(memory as any, telegram as any);
+  const sendMessage = tools.find((tool) => tool.name === "telegram_send_message");
+
+  expect(sendMessage).toBeDefined();
+
+  await expect(
+    sendMessage!.execute(
+      { text: "Hello active chat", chat_id: 123 as any },
+      { chatId: "chat-active", userId: "user-1", memory: memory as any },
+    ),
+  ).resolves.toBe("chat_id must match the current chat.");
+
+  expect(telegram.sendMessage).not.toHaveBeenCalled();
+});
+
 test("memory-backed tools use ctx.memory instead of the factory capture", async () => {
   const capturedMemory = createMemoryServiceDouble();
   const runtimeMemory = createMemoryServiceDouble();

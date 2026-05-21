@@ -69,6 +69,44 @@ test("does not return due autonomous jobs when limit is zero", () => {
   expect(service.listDueJobs(Math.floor(Date.UTC(2026, 4, 17, 11, 25, 0) / 1000), 0)).toEqual([]);
 });
 
+test("lists only the acting user's autonomous jobs in the current chat", () => {
+  const { service } = makeService();
+
+  const ownedInChat = service.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Owned in chat",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+  });
+  service.createJob({
+    chatId: "chat-1",
+    userId: "user-2",
+    prompt: "Other user in same chat",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+  });
+  service.createJob({
+    chatId: "chat-2",
+    userId: "user-1",
+    prompt: "Owned in another chat",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+  });
+
+  expect(service.listJobsForActor("chat-1", "user-1").map((job) => job.id)).toEqual([ownedInChat.id]);
+});
+
+test("hides another user's autonomous job from actor-scoped detail lookup", () => {
+  const { service } = makeService();
+
+  const otherUsersJob = service.createJob({
+    chatId: "chat-1",
+    userId: "user-2",
+    prompt: "Other user in same chat",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+  });
+
+  expect(service.getJobForActor("chat-1", "user-1", otherUsersJob.id)).toBeNull();
+});
+
 test("creates hybrid one-shot jobs with a run limit", () => {
   const { service } = makeService();
   const runAtUnix = Math.floor(Date.UTC(2026, 4, 18, 6, 30, 0) / 1000);

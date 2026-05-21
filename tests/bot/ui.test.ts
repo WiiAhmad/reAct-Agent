@@ -7,6 +7,7 @@ import {
   buildSchedulePresetKeyboard,
   buildSkillDraftKeyboard,
   buildStartKeyboard,
+  uiCallbacks,
 } from "../../src/bot/ui/keyboards";
 import {
   renderHelpScreen,
@@ -18,6 +19,16 @@ import {
 
 function keyboardLabels(keyboard: { inline_keyboard: Array<Array<{ text: string }>> }) {
   return keyboard.inline_keyboard.flat().map((button) => button.text);
+}
+
+type KeyboardButton = ReturnType<typeof buildMainMenuKeyboard>["inline_keyboard"][number][number];
+
+function hasCallbackData(button: KeyboardButton): button is KeyboardButton & { callback_data: string } {
+  return "callback_data" in button;
+}
+
+function callbackDataValues(keyboard: { inline_keyboard: KeyboardButton[][] }) {
+  return keyboard.inline_keyboard.flat().filter(hasCallbackData).map((button) => button.callback_data);
 }
 
 test("start screen shows Menu and Help and no removed commands", () => {
@@ -34,19 +45,32 @@ test("start screen shows Menu and Help and no removed commands", () => {
   expect(screen).not.toContain("/jobs");
 });
 
-test("main menu shows Memory, Jobs, and Help entries", () => {
+test("main menu keeps private-chat defaults", () => {
   const keyboard = buildMainMenuKeyboard();
   const screen = renderMainMenuScreen();
 
   expect(keyboardLabels(keyboard)).toEqual(["Memory", "Jobs", "Help"]);
-  expect(screen).toContain("Memory");
+  expect(screen).toContain("Memory membuka ringkasan memory");
   expect(screen).toContain("Jobs");
   expect(screen).toContain("Help");
   expect(screen).toContain("Memory Update");
   expect(screen).toContain("menu");
 });
 
-test("help screen documents the reduced command surface", () => {
+test("main menu shared-chat variant omits memory entrypoints", () => {
+  const keyboard = buildMainMenuKeyboard({ isPrivateChat: false });
+  const screen = renderMainMenuScreen({ isPrivateChat: false });
+
+  expect(keyboardLabels(keyboard)).toEqual(["Jobs", "Help"]);
+  expect(callbackDataValues(keyboard)).not.toContain(uiCallbacks.memory);
+  expect(screen).toContain("Jobs membuka pengelolaan autonomous jobs dari menu.");
+  expect(screen).toContain("Memory tetap private-only");
+  expect(screen).not.toContain("Memory membuka ringkasan memory");
+  expect(screen).not.toContain("Memory Update");
+  expect(screen).not.toContain("Skill Drafts");
+});
+
+test("help screen keeps private-chat defaults", () => {
   const keyboard = buildHelpKeyboard();
   const screen = renderHelpScreen();
 
@@ -60,6 +84,21 @@ test("help screen documents the reduced command surface", () => {
   expect(screen).not.toContain("/memory_force");
   expect(screen).not.toContain("/job");
   expect(screen).not.toContain("/jobs");
+});
+
+test("help screen shared-chat variant avoids advertising memory menu entries", () => {
+  const keyboard = buildHelpKeyboard({ isPrivateChat: false });
+  const screen = renderHelpScreen({ isPrivateChat: false });
+
+  expect(keyboardLabels(keyboard)).toEqual(["Menu"]);
+  expect(screen).toContain("/start - buka start screen");
+  expect(screen).toContain("/menu - buka menu utama");
+  expect(screen).toContain("/help - tampilkan bantuan ini");
+  expect(screen).toContain("Jobs tersedia dari menu");
+  expect(screen).toContain("Memory tetap private-only");
+  expect(screen).not.toContain("Memory Update, Skill Drafts, dan Jobs tersedia dari menu");
+  expect(screen).not.toContain("Skill Drafts");
+  expect(screen).not.toContain("Memory Update");
 });
 
 test("memory summary and jobs screens keep the menu-driven copy", () => {

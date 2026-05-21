@@ -64,17 +64,21 @@ export function renderStartScreen(): string {
   ]);
 }
 
-export function renderMainMenuScreen(): string {
+export function renderMainMenuScreen(options?: { isPrivateChat?: boolean }): string {
+  const isPrivateChat = options?.isPrivateChat ?? true;
+
   return normalizeLines([
     "Menu utama",
     "",
-    "Memory membuka ringkasan memory dan pengaturan Memory Update.",
+    ...(isPrivateChat ? ["Memory membuka ringkasan memory dan pengaturan Memory Update."] : ["Memory tetap private-only dan tidak ditampilkan di menu shared chat."]),
     "Jobs membuka pengelolaan autonomous jobs dari menu.",
     "Help menampilkan perintah publik dan panduan singkat.",
   ]);
 }
 
-export function renderHelpScreen(): string {
+export function renderHelpScreen(options?: { isPrivateChat?: boolean }): string {
+  const isPrivateChat = options?.isPrivateChat ?? true;
+
   return normalizeLines([
     "Help",
     "",
@@ -83,7 +87,9 @@ export function renderHelpScreen(): string {
     "/menu - buka menu utama",
     "/help - tampilkan bantuan ini",
     "",
-    "Memory Update, Skill Drafts, dan Jobs tersedia dari menu, bukan lewat command tambahan.",
+    ...(isPrivateChat
+      ? ["Memory Update, Skill Drafts, dan Jobs tersedia dari menu, bukan lewat command tambahan."]
+      : ["Jobs tersedia dari menu, bukan lewat command tambahan.", "Memory tetap private-only dan tidak ditampilkan di menu shared chat."]),
   ]);
 }
 

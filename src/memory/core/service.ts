@@ -548,7 +548,7 @@ export class MemoryService {
       backend.getActiveTaskCanvas(input.userId, input.chatId),
       backend.listTaskCanvases(input.userId, input.chatId, options.l15.historyTaskLimit),
     ]);
-    const activeCanvas = activeTask ? await backend.getTaskCanvas(input.chatId) : undefined;
+    const activeCanvas = activeTask ? await backend.getTaskCanvasForUser(input.userId, input.chatId) : undefined;
     const recentMessages = turns
       .filter((turn) => turn.role === "user" || turn.role === "assistant")
       .map((turn) => ({ role: turn.role, content: turn.content }) as AgentMessage);

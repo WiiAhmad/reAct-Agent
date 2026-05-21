@@ -43,6 +43,10 @@ function resolveUserId(ctx: BotContext) {
   return String(ctx.from?.id ?? ctx.chat?.id ?? "unknown");
 }
 
+function isPrivateChat(ctx: BotContext) {
+  return ctx.chat?.type === "private";
+}
+
 function resolveMemoryUpdateCallbackTarget(ctx: BotContext) {
   if (ctx.chat?.id == null || ctx.from?.id == null) {
     return null;
@@ -96,14 +100,21 @@ async function presentScreen(ctx: BotContext, text: string, keyboard: InlineKeyb
 }
 
 async function showMenu(ctx: BotContext) {
-  await presentScreen(ctx, renderMainMenuScreen(), buildMainMenuKeyboard());
+  const privateChat = isPrivateChat(ctx);
+  await presentScreen(ctx, renderMainMenuScreen({ isPrivateChat: privateChat }), buildMainMenuKeyboard({ isPrivateChat: privateChat }));
 }
 
 async function showHelp(ctx: BotContext) {
-  await presentScreen(ctx, renderHelpScreen(), buildHelpKeyboard());
+  const privateChat = isPrivateChat(ctx);
+  await presentScreen(ctx, renderHelpScreen({ isPrivateChat: privateChat }), buildHelpKeyboard({ isPrivateChat: privateChat }));
 }
 
 async function showMemorySummary(ctx: BotContext, deps: BotDeps) {
+  if (!isPrivateChat(ctx)) {
+    await presentScreen(ctx, "Memory hanya tersedia di private chat.", buildMainMenuKeyboard({ isPrivateChat: false }));
+    return;
+  }
+
   const chatId = resolveChatId(ctx);
   const userId = resolveUserId(ctx);
   const [memoryStatus, recall, generatedSkillCount] = await Promise.all([
@@ -123,7 +134,8 @@ async function showMemorySummary(ctx: BotContext, deps: BotDeps) {
 
 async function showJobsScreen(ctx: BotContext, deps: BotDeps) {
   const chatId = resolveChatId(ctx);
-  const jobs = deps.autonomousJobs.listJobsForChat(chatId);
+  const userId = resolveUserId(ctx);
+  const jobs = deps.autonomousJobs.listJobsForActor(chatId, userId);
   await presentScreen(ctx, renderJobsSummary(jobs), buildJobsListKeyboard(jobs));
 }
 
@@ -149,7 +161,8 @@ export function createTelegramBot(deps: BotDeps) {
       chatId: String(ctx.chat.id),
       userId: resolveUserId(ctx),
     });
-    await ctx.reply(renderMainMenuScreen(), { reply_markup: buildMainMenuKeyboard() });
+    const privateChat = isPrivateChat(ctx);
+    await ctx.reply(renderMainMenuScreen({ isPrivateChat: privateChat }), { reply_markup: buildMainMenuKeyboard({ isPrivateChat: privateChat }) });
   });
 
   bot.command("help", async (ctx) => {
@@ -157,7 +170,8 @@ export function createTelegramBot(deps: BotDeps) {
       chatId: String(ctx.chat.id),
       userId: resolveUserId(ctx),
     });
-    await ctx.reply(renderHelpScreen(), { reply_markup: buildHelpKeyboard() });
+    const privateChat = isPrivateChat(ctx);
+    await ctx.reply(renderHelpScreen({ isPrivateChat: privateChat }), { reply_markup: buildHelpKeyboard({ isPrivateChat: privateChat }) });
   });
 
   bot.callbackQuery(uiCallbacks.menu, async (ctx) => {
@@ -177,6 +191,10 @@ export function createTelegramBot(deps: BotDeps) {
 
   bot.callbackQuery(uiCallbacks.memoryUpdate, async (ctx) => {
     await ctx.answerCallbackQuery();
+    if (!isPrivateChat(ctx)) {
+      await presentScreen(ctx, "Memory hanya tersedia di private chat.", buildMainMenuKeyboard({ isPrivateChat: false }));
+      return;
+    }
     await ctx.conversation.enter(memoryUpdateConversationId);
   });
 
@@ -191,6 +209,10 @@ export function createTelegramBot(deps: BotDeps) {
     }
 
     await ctx.answerCallbackQuery();
+    if (!isPrivateChat(ctx)) {
+      await presentScreen(ctx, "Memory hanya tersedia di private chat.", buildMainMenuKeyboard({ isPrivateChat: false }));
+      return;
+    }
     emitTrace(deps.trace, {
       minLevel: 1,
       source: "bot",
@@ -222,6 +244,10 @@ export function createTelegramBot(deps: BotDeps) {
 
   bot.callbackQuery(uiCallbacks.skillDrafts, async (ctx) => {
     await ctx.answerCallbackQuery();
+    if (!isPrivateChat(ctx)) {
+      await presentScreen(ctx, "Memory hanya tersedia di private chat.", buildMainMenuKeyboard({ isPrivateChat: false }));
+      return;
+    }
     await ctx.conversation.enter(skillDraftConversationId);
   });
 
