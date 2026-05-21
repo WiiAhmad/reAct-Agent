@@ -462,8 +462,31 @@ export class MemoryService {
     content: string;
     meta?: EventMeta;
   }): Promise<number> {
-    const { interactionLogService } = getState(this);
-    return interactionLogService.logToolCall(input);
+    const { interactionLogService, store } = getState(this);
+    const eventId = await interactionLogService.logToolCall(input);
+
+    if (store) {
+      const recordedAt = new Date().toISOString();
+      await store.upsertL0({
+        recordId: `interaction:l0:${eventId}:tool_call`,
+        sessionKey: sessionKey(input.chatId, input.userId),
+        sessionId: input.chatId,
+        chatId: input.chatId,
+        userId: input.userId,
+        role: "tool",
+        messageText: input.content,
+        recordedAt,
+        timestamp: Date.parse(recordedAt) || eventId,
+        metadata: {
+          ...(input.meta ?? {}),
+          eventType: "tool_call",
+          toolName: input.toolName,
+          toolCallId: input.toolCallId ?? null,
+        },
+      });
+    }
+
+    return eventId;
   }
 
   async logToolResult(input: {
@@ -475,8 +498,32 @@ export class MemoryService {
     offloaded: boolean;
     meta?: EventMeta;
   }): Promise<number> {
-    const { interactionLogService } = getState(this);
-    return interactionLogService.logToolResult(input);
+    const { interactionLogService, store } = getState(this);
+    const eventId = await interactionLogService.logToolResult(input);
+
+    if (store) {
+      const recordedAt = new Date().toISOString();
+      await store.upsertL0({
+        recordId: `interaction:l0:${eventId}:tool_result`,
+        sessionKey: sessionKey(input.chatId, input.userId),
+        sessionId: input.chatId,
+        chatId: input.chatId,
+        userId: input.userId,
+        role: "tool",
+        messageText: input.content,
+        recordedAt,
+        timestamp: Date.parse(recordedAt) || eventId,
+        metadata: {
+          ...(input.meta ?? {}),
+          eventType: "tool_result",
+          toolName: input.toolName,
+          toolCallId: input.toolCallId ?? null,
+          offloaded: input.offloaded,
+        },
+      });
+    }
+
+    return eventId;
   }
 
   async logTurn(input: LogTurnInput): Promise<number> {
