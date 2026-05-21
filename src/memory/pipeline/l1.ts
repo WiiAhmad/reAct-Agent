@@ -6,6 +6,7 @@ import { buildL1RecordMetadata, type L1MemoryKind } from "../core/store/record-m
 import type { IMemoryStore, L1Record } from "../core/store/types";
 import type { ConversationTurn, MemoryAtom } from "../core/types";
 import { buildL1SystemPrompt } from "../prompts/l1";
+import { resolveL1Conflict } from "./l1-dedupe";
 import { normalizeL1Extraction, type ParsedL1Extraction } from "./l1-schema";
 
 type ParsedExtractions = {
@@ -170,8 +171,26 @@ export async function runL1Pipeline(
         sourceMessageIds: normalized.source_message_ids ?? [],
         timestamps: normalized.timestamps ?? [],
       });
-      const stored = await store.upsertL1(record);
-      storeCreated = stored ? created : undefined;
+      const candidates = await store.queryL1Records({ userId, type: "L1", limit: 20 });
+      const conflict = await resolveL1Conflict({ llm, newRecord: record, candidates });
+
+      if (conflict.action === "skip") {
+        continue;
+      }
+
+      const target = conflict.action === "update" || conflict.action === "merge"
+        ? candidates.find((candidate) => candidate.recordId === conflict.targetRecordId)
+        : undefined;
+      const recordToStore = target === undefined ? record : {
+        ...record,
+        recordId: target.recordId,
+        priority: Math.max(target.priority, record.priority),
+        sourceConversationIds: mergeNumberSets(target.sourceConversationIds, record.sourceConversationIds),
+        metadata: { ...(target.metadata ?? {}), ...(record.metadata ?? {}) },
+        createdTime: target.createdTime,
+      };
+      const stored = await store.upsertL1(recordToStore);
+      storeCreated = stored ? target === undefined && created : undefined;
     }
 
     const result = await backend.upsertMemoryAtom({
