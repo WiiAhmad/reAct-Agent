@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { AgentMessage, LlmProvider } from "../../agent/types";
 
 export type L4EvidenceEntry = {
@@ -104,17 +104,18 @@ export async function generateL4Skill(llm: LlmProvider, input: L4Request): Promi
   return parsed;
 }
 
-export async function writeDraftSkill(skillsDir: string, skill: L4Response): Promise<{ absolutePath: string; relativePath: string }> {
-  const relativePath = `${skill.skillName}/SKILL.md`;
-  const directory = resolve(skillsDir, skill.skillName);
+export async function writeDraftSkill(skillsDir: string, skill: L4Response, draftDirectory: string): Promise<{ absolutePath: string; relativePath: string }> {
+  const relativePath = `${skill.skillName}/${draftDirectory}/SKILL.md`;
+  const directory = resolve(skillsDir, skill.skillName, draftDirectory);
   const absolutePath = resolve(directory, "SKILL.md");
   const root = resolve(skillsDir);
-  if (!absolutePath.startsWith(root)) {
+  const pathFromRoot = relative(root, absolutePath);
+  if (pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
     throw new Error("Invalid skill path.");
   }
 
   await mkdir(directory, { recursive: true });
-  await writeFile(absolutePath, skill.skillContent, "utf8");
+  await writeFile(absolutePath, skill.skillContent, { encoding: "utf8", flag: "wx" });
   return { absolutePath, relativePath };
 }
 

@@ -1536,6 +1536,14 @@ export class SqliteMemoryBackend implements MemoryBackend {
     return row?.count ?? 0;
   }
 
+  async countGeneratedSkillsByName(userId: string, skillName: string): Promise<number> {
+    const row = this.db
+      .query(`SELECT COUNT(*) AS count FROM memory_generated_skills WHERE user_id = ? AND skill_name = ?`)
+      .get(userId, skillName) as { count: number } | null;
+
+    return row?.count ?? 0;
+  }
+
   async listGeneratedSkills(userId: string, limit: number): Promise<GeneratedSkill[]> {
     const rows = this.db
       .query(`

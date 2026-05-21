@@ -442,6 +442,82 @@ test("PipelineCoordinator can source pending L0 turns from IMemoryStore", async 
   }
 });
 
+test("PipelineCoordinator coerces object checkpoint fields before querying IMemoryStore", async () => {
+  const { tempDir, backend, store } = await createMemory();
+  let capturedCursor: unknown;
+  const capturingStore = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === "queryL0ForUser") {
+        return async (...args: Parameters<typeof store.queryL0ForUser>) => {
+          capturedCursor = args[1];
+          return [];
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  try {
+    await backend.setCheckpoint("u1", "l1_last_conversation_id", { timestamp: "1000", recordId: 123 });
+
+    await new PipelineCoordinator(backend, fakeLlm, capturingStore).runMaintenanceForUser("u1");
+
+    expect(capturedCursor).toEqual({ timestamp: 1000, recordId: "123" });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("PipelineCoordinator preserves same-timestamp IMemoryStore rows across batches", async () => {
+  const { tempDir, backend, store } = await createMemory();
+  const timestamp = Date.parse("2026-05-18T08:00:00.000Z");
+  let l1Calls = 0;
+  const batchLlm: LlmProvider = {
+    async complete({ messages }) {
+      const system = String(messages[0]?.content ?? "");
+      if (system.includes("L1 extractor")) {
+        l1Calls += 1;
+        return {
+          content: JSON.stringify([{ text: `Batch ${l1Calls} same timestamp memory`, importance: 4, source_turn_ids: [l1Calls] }]),
+          toolCalls: [],
+        };
+      }
+      if (system.includes("L2 Scenario aggregator")) {
+        return { content: "## Same timestamp batches\n- atom_id=1 Batch memory", toolCalls: [] };
+      }
+      return { content: "# Persona\nTracks same timestamp batches.", toolCalls: [] };
+    },
+  };
+
+  try {
+    for (let index = 1; index <= 81; index += 1) {
+      const padded = String(index).padStart(3, "0");
+      await store.upsertL0({
+        recordId: `legacy:l0:${padded}`,
+        sessionKey: "telegram:c1:u1",
+        sessionId: "c1",
+        chatId: "c1",
+        userId: "u1",
+        role: "user",
+        messageText: `same timestamp message ${padded}`,
+        recordedAt: "2026-05-18T08:00:00.000Z",
+        timestamp,
+        metadata: { mode: "chat" },
+      });
+    }
+
+    const first = await new PipelineCoordinator(backend, batchLlm, store).runMaintenanceForUser("u1");
+    expect(first.l1Created).toBe(1);
+    expect(await backend.getCheckpoint("u1", "l1_last_conversation_id")).toEqual({ timestamp, recordId: "legacy:l0:080" });
+
+    const second = await new PipelineCoordinator(backend, batchLlm, store).runMaintenanceForUser("u1");
+    expect(second.l1Created).toBe(1);
+    expect(await backend.getCheckpoint("u1", "l1_last_conversation_id")).toEqual({ timestamp, recordId: "legacy:l0:081" });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}, 20000);
+
 test("task canvas and offload backend paths remain active when PipelineCoordinator uses IMemoryStore", async () => {
   const { tempDir, backend, store } = await createMemory();
 

@@ -86,6 +86,7 @@ export interface MemoryBackend {
   searchTaskCanvases(userId: string, query: string, limit: number, chatId?: string): Promise<TaskCanvasRecall[]>;
   insertGeneratedSkill(skill: NewGeneratedSkill): Promise<GeneratedSkill>;
   countGeneratedSkills(userId: string): Promise<number>;
+  countGeneratedSkillsByName(userId: string, skillName: string): Promise<number>;
   listGeneratedSkills(userId: string, limit: number): Promise<GeneratedSkill[]>;
   getCheckpoint(userId: string, key: string): Promise<PipelineCheckpointValue | undefined>;
   setCheckpoint(userId: string, key: string, value: PipelineCheckpointValue): Promise<void>;

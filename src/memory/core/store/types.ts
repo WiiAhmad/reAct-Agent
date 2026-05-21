@@ -33,6 +33,11 @@ export type L0Record = {
   metadata?: EventMeta;
 };
 
+export type L0Cursor = number | {
+  timestamp: number;
+  recordId: string;
+};
+
 export type L0QueryRow = L0Record;
 
 export type L0SessionGroup = {
@@ -123,9 +128,9 @@ export type IMemoryStore = {
   deleteL0(recordId: string): MaybePromise<boolean>;
   deleteL0Expired(cutoffIso: string): MaybePromise<number>;
   countL0(userId?: string): MaybePromise<number>;
-  queryL0ForUser?(userId: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
-  queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
-  queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0SessionGroup[]>;
+  queryL0ForUser?(userId: string, after?: L0Cursor, limit?: number): MaybePromise<L0QueryRow[]>;
+  queryL0ForL1(sessionKey: string, after?: L0Cursor, limit?: number): MaybePromise<L0QueryRow[]>;
+  queryL0GroupedBySessionId(sessionKey: string, after?: L0Cursor, limit?: number): MaybePromise<L0SessionGroup[]>;
   getAllL0Texts(): MaybePromise<Array<{ record_id: string; message_text: string; recorded_at: string }>>;
   searchL0Vector(queryEmbedding: Float32Array, topK?: number, queryText?: string, userId?: string): MaybePromise<L0SearchResult[]>;
   searchL0Fts(ftsQuery: string, limit?: number, userId?: string): MaybePromise<L0FtsResult[]>;

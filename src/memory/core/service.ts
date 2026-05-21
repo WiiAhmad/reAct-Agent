@@ -116,6 +116,10 @@ export type MemoryServiceLike = {
   saveMemory(input: SaveMemoryInput): MaybePromise<number>;
 };
 
+function isFileAlreadyExistsError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "EEXIST");
+}
+
 type MemoryServiceState = {
   backend: MemoryBackend;
   recallService: RecallService;
@@ -668,7 +672,17 @@ export class MemoryService {
       return validation;
     }
 
-    const draft = await writeDraftSkill(options.generatedSkillsDir, generated);
+    const existingDraftCount = await backend.countGeneratedSkillsByName(input.userId, generated.skillName);
+    let draft: Awaited<ReturnType<typeof writeDraftSkill>> | undefined;
+    for (let draftNumber = existingDraftCount + 1; !draft; draftNumber += 1) {
+      const draftDirectory = `draft-${String(draftNumber).padStart(3, "0")}`;
+      try {
+        draft = await writeDraftSkill(options.generatedSkillsDir, generated, draftDirectory);
+      } catch (error) {
+        if (isFileAlreadyExistsError(error)) continue;
+        throw error;
+      }
+    }
     await backend.insertGeneratedSkill({
       sourceTaskId: task.id,
       chatId: input.chatId,

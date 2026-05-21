@@ -5,27 +5,20 @@
 Verified against the current working tree on 2026-05-21.
 
 Reviewed 14 previously documented bugs:
-- 2 still appear open in the current tree
-- 12 appear fixed in the current tree
+- 0 still appear open in the current tree
+- 14 appear fixed in the current tree
 
 Unless noted otherwise, the findings below are based on current control-flow inspection and targeted test evidence.
 
 ## Executive summary
 
-Phase 1 and Phase 2 bugs are now fixed in the current tree.
+All previously documented bugs verified in this audit are now fixed in the current tree.
 
-The remaining open issues are now limited to consistency/integrity bugs:
-- generated skill drafts can still overwrite each other while the stored draft count increases,
-- store-backed maintenance can still skip rows that share the same millisecond timestamp.
+The last consistency/integrity issues are resolved:
+- generated skill drafts now use deterministic per-generation revision paths instead of overwriting the same `skillName/SKILL.md` file,
+- store-backed maintenance now advances checkpoints with a composite `(timestamp, recordId)` cursor, so same-timestamp rows remain reachable across batches.
 
-Task ownership and scheduler correctness are now aligned with the intended semantics:
-- completion-turn tool evidence stays attached to the completed task,
-- Memory Update back navigation preserves the generated draft count,
-- recurring jobs created through `tdai_create_job` are unlimited unless `max_runs` is explicit,
-- schedule edits clear stale one-shot caps,
-- one-shot hybrid retries do not resend already-delivered fixed reminder text,
-- `last_finished_at` reflects the true finish time,
-- cron schedules honor `APP_TIMEZONE`.
+The bug ledger below now reflects the completed state of the campaign.
 
 ## Bug entries
 
@@ -167,27 +160,35 @@ Task ownership and scheduler correctness are now aligned with the intended seman
 
 ### 9. Generated skill drafts can overwrite each other while the stored draft count keeps increasing
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** Two draft generations with the same `skillName` overwrite the same `SKILL.md` file, but both still count as separate drafts in SQLite.
+**Impact:** Repeated draft generations with the same `skillName` now keep separate files instead of overwriting the same path while the database count keeps growing.
 
-**Root cause:** draft file output is keyed only by `skillName`, while each generation always inserts a fresh database row and the displayed count is based on row count.
+**Root cause:** the file path was keyed only by `skillName` while the database created a fresh row for every generation.
 
-**Relevant code:** `src/memory/offload/l4.ts:107`, `src/memory/core/service.ts:669`, `src/memory/backends/sqlite/backend.ts:1462`, `src/memory/backends/sqlite/backend.ts:1509`
+**Fix summary:** generated skill drafts now use deterministic per-generation revision directories under the `skillName`, and the service derives the next revision from existing rows before writing the file.
+
+**Changed code:** `src/memory/offload/l4.ts`, `src/memory/core/service.ts`, `src/memory/backends/sqlite/backend.ts`, `src/memory/core/backend.ts`
+
+**Verification:** `tests/memory/l4.test.ts`, `tests/memory/sqlite-backend.test.ts`
 
 ---
 
 ### 10. Store-backed memory maintenance can permanently skip turns that share the same millisecond timestamp
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** Some L0 turns can be skipped forever if a batch checkpoint lands on one row while later rows share the same timestamp.
+**Impact:** Store-backed maintenance no longer loses later rows that share the same timestamp with the last row in a previous batch.
 
-**Root cause:** store-backed maintenance advances the checkpoint using only the last processed timestamp, while the next query uses `timestamp > checkpoint` instead of a stable `(timestamp, record_id)` tie-breaker.
+**Root cause:** store-backed pagination and checkpointing used a bare timestamp instead of a stable `(timestamp, recordId)` tie-breaker.
 
-**Relevant code:** `src/memory/pipeline/coordinator.ts:101`, `src/memory/backends/sqlite/store.ts:859`, `src/memory/backends/sqlite/store.ts:865`
+**Fix summary:** the IMemoryStore interface, SQLite store queries, and PipelineCoordinator now all use a composite cursor with `timestamp` and `recordId`.
+
+**Changed code:** `src/memory/core/store/types.ts`, `src/memory/backends/sqlite/store.ts`, `src/memory/pipeline/coordinator.ts`
+
+**Verification:** `tests/memory/sqlite-store-l0.test.ts`, `tests/memory/imemory-store-integration.test.ts`, `tests/memory/sqlite-backend.test.ts`
 
 ---
 
@@ -255,5 +256,4 @@ Task ownership and scheduler correctness are now aligned with the intended seman
 
 ## Suggested fix order
 
-1. generated-skill draft path collisions
-2. store-backed same-timestamp checkpoint skipping
+All verified bugs in this audit are fixed in the current tree.

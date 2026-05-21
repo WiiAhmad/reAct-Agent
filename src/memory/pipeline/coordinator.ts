@@ -2,7 +2,7 @@ import type { LlmProvider } from "../../agent/types";
 import { emitTrace, NEW_MEMORY_STACK_TAG } from "../../logging/helpers";
 import type { RuntimeTraceEmitter } from "../../logging/types";
 import type { MemoryBackend } from "../core/backend";
-import type { IMemoryStore } from "../core/store/types";
+import type { IMemoryStore, L0Cursor } from "../core/store/types";
 import { runL1Pipeline } from "./l1";
 import { runL2Pipeline } from "./l2";
 import { runL3Pipeline } from "./l3";
@@ -17,6 +17,21 @@ export type PipelineMaintenanceResult = {
 const L1_CHECKPOINT_KEY = "l1_last_conversation_id";
 const DEFAULT_EVIDENCE_LIMIT = 80;
 const DEFAULT_ATOM_LIMIT = 100;
+
+function parseL0Checkpoint(value: unknown): L0Cursor {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const cursor = value as { timestamp?: unknown; recordId?: unknown };
+    const timestamp = Number(cursor.timestamp ?? 0);
+    if (Number.isFinite(timestamp)) {
+      return { timestamp, recordId: String(cursor.recordId ?? "") };
+    }
+  }
+
+  return Number.parseInt(String(value ?? "0"), 10) || 0;
+}
 
 function numericRecordId(recordId: string, fallback: number): number {
   const direct = Number.parseInt(recordId, 10);
@@ -65,21 +80,21 @@ export class PipelineCoordinator {
   async runMaintenanceForUser(userId: string, force = false, options: MemoryUpdateProgressOptions = {}): Promise<PipelineMaintenanceResult> {
     const source = options.source ?? "scheduler";
     const lastCheckpoint = await this.backend.getCheckpoint(userId, L1_CHECKPOINT_KEY);
-    const afterConversationId = typeof lastCheckpoint === "number"
-      ? lastCheckpoint
-      : Number.parseInt(String(lastCheckpoint ?? "0"), 10) || 0;
+    const l0Checkpoint = parseL0Checkpoint(lastCheckpoint);
+    const afterConversationId = typeof l0Checkpoint === "number" ? l0Checkpoint : l0Checkpoint.timestamp;
 
-    const storePendingTurns = this.store?.queryL0ForUser
-      ? (await this.store.queryL0ForUser(userId, afterConversationId, DEFAULT_EVIDENCE_LIMIT)).map((row) => ({
-        id: numericRecordId(row.recordId, row.timestamp),
-        chatId: row.chatId,
-        userId: row.userId,
-        role: row.role,
-        content: row.messageText,
-        meta: row.metadata ?? {},
-        createdAt: row.recordedAt,
-      }))
+    const storePendingRows = this.store?.queryL0ForUser
+      ? await this.store.queryL0ForUser(userId, l0Checkpoint, DEFAULT_EVIDENCE_LIMIT)
       : undefined;
+    const storePendingTurns = storePendingRows?.map((row) => ({
+      id: numericRecordId(row.recordId, row.timestamp),
+      chatId: row.chatId,
+      userId: row.userId,
+      role: row.role,
+      content: row.messageText,
+      meta: row.metadata ?? {},
+      createdAt: row.recordedAt,
+    }));
     const pendingTurns = storePendingTurns && storePendingTurns.length > 0
       ? storePendingTurns
       : await this.backend.listPendingConversationEvidence(userId, afterConversationId, DEFAULT_EVIDENCE_LIMIT);
@@ -99,8 +114,9 @@ export class PipelineCoordinator {
       ? { createdAtoms: 0, lastConversationId: afterConversationId, checkpointAdvanced: false }
       : await runL1Pipeline(this.backend, this.llm, userId, pendingTurns, this.store);
     if (l1Result.checkpointAdvanced) {
-      const nextCheckpoint = this.store?.queryL0ForUser
-        ? Date.parse(pendingTurns.at(-1)?.createdAt ?? "") || afterConversationId
+      const lastStoreRow = storePendingRows?.at(-1);
+      const nextCheckpoint = this.store?.queryL0ForUser && lastStoreRow
+        ? { timestamp: lastStoreRow.timestamp, recordId: lastStoreRow.recordId }
         : l1Result.lastConversationId;
       await this.backend.setCheckpoint(userId, L1_CHECKPOINT_KEY, nextCheckpoint);
     }

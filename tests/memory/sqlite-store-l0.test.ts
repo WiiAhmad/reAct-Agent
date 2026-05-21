@@ -69,8 +69,30 @@ test("queryL0ForL1 returns session rows ordered by timestamp", async () => {
   await store.upsertL0(otherSession);
 
   await expect(store.queryL0ForL1("session-key-1", 0, 10)).resolves.toEqual([earlier, later]);
-  await expect(store.queryL0ForL1("session-key-1", 1000, 10)).resolves.toEqual([later]);
+  await expect(store.queryL0ForL1("session-key-1", 1000, 10)).resolves.toEqual([earlier, later]);
   await expect(store.queryL0ForL1("session-key-1", 0, 1)).resolves.toEqual([earlier]);
+}, 20000);
+
+test("queryL0ForUser pages identical timestamps by record_id", async () => {
+  const { store } = await createStore();
+  const first = createRecord({ recordId: "l0-a", messageText: "first same timestamp", timestamp: 1000, userId: "user-1" });
+  const second = createRecord({ recordId: "l0-b", messageText: "second same timestamp", timestamp: 1000, userId: "user-1" });
+  const third = createRecord({ recordId: "l0-c", messageText: "third later timestamp", timestamp: 2000, userId: "user-1" });
+  await store.upsertL0(third);
+  await store.upsertL0(first);
+  await store.upsertL0(second);
+
+  await expect(store.queryL0ForUser("user-1", { timestamp: 1000, recordId: "l0-a" }, 10)).resolves.toEqual([second, third]);
+}, 20000);
+
+test("queryL0ForUser keeps same-timestamp rows reachable for numeric cursors", async () => {
+  const { store } = await createStore();
+  const first = createRecord({ recordId: "l0-a", messageText: "first legacy cursor row", timestamp: 1000, userId: "user-1" });
+  const second = createRecord({ recordId: "l0-b", messageText: "second legacy cursor row", timestamp: 1000, userId: "user-1" });
+  await store.upsertL0(second);
+  await store.upsertL0(first);
+
+  await expect(store.queryL0ForUser("user-1", 1000, 10)).resolves.toEqual([first, second]);
 }, 20000);
 
 test("queryL0GroupedBySessionId groups rows by sessionId", async () => {

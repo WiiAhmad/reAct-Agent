@@ -138,6 +138,7 @@ test("SQLite backend stores task offload pipeline records", async () => {
 
     expect(skill.sourceNodeIds).toEqual(["node-1"]);
     expect(await backend.countGeneratedSkills("u1")).toBe(1);
+    expect(await backend.countGeneratedSkillsByName("u1", "demo-skill")).toBe(1);
     expect(await backend.listGeneratedSkills("u1", 10)).toEqual([
       expect.objectContaining({
         id: skill.id,
@@ -227,6 +228,7 @@ test("SQLite backend round-trips checkpoint values including numbers", async () 
     ["null", null],
     ["array", ["x", 2, false]],
     ["object", { nested: [1, "two"], ok: true }],
+    ["l0-composite-cursor", { timestamp: 1710000000000, recordId: "legacy:l0:080" }],
   ];
 
   for (const [key, value] of cases) {

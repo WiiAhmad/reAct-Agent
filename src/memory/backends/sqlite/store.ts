@@ -3,6 +3,7 @@ import type { EventMeta } from "../../core/types";
 import type {
   EmbeddingProviderInfo,
   IMemoryStore,
+  L0Cursor,
   L0FtsResult,
   L0QueryRow,
   L0Record,
@@ -109,6 +110,17 @@ function l1RowId(recordId: string): number {
 
 function l0RowId(recordId: string): number {
   return l1RowId(recordId);
+}
+
+function normalizeL0Cursor(after: L0Cursor = 0): { timestamp: number; recordId: string } {
+  if (typeof after === "number") {
+    return { timestamp: Number.isFinite(after) ? after : 0, recordId: "" };
+  }
+
+  return {
+    timestamp: Number.isFinite(after.timestamp) ? after.timestamp : 0,
+    recordId: after.recordId,
+  };
 }
 
 function mapL0Row(row: L0DbRow): L0QueryRow {
@@ -856,16 +868,19 @@ export class SqliteMemoryStore implements IMemoryStore {
     }
   }
 
-  async queryL0ForUser(userId: string, afterRecordedAtMs = 0, limit = 80): Promise<L0QueryRow[]> {
+  async queryL0ForUser(userId: string, after: L0Cursor = 0, limit = 80): Promise<L0QueryRow[]> {
     try {
+      const cursor = normalizeL0Cursor(after);
       const rows = this.db.query(`
         SELECT record_id, session_key, session_id, chat_id, user_id, role, message_text,
           recorded_at, timestamp, metadata_json
         FROM memory_store_l0
-        WHERE user_id = ? AND timestamp > ? AND role IN ('user', 'assistant')
+        WHERE user_id = ?
+          AND (timestamp > ? OR (timestamp = ? AND record_id > ?))
+          AND role IN ('user', 'assistant')
         ORDER BY timestamp ASC, record_id ASC
         LIMIT ?
-      `).all(userId, afterRecordedAtMs, limit) as L0DbRow[];
+      `).all(userId, cursor.timestamp, cursor.timestamp, cursor.recordId, limit) as L0DbRow[];
 
       return rows.map(mapL0Row);
     } catch {
@@ -874,16 +889,18 @@ export class SqliteMemoryStore implements IMemoryStore {
     }
   }
 
-  async queryL0ForL1(sessionKey: string, afterRecordedAtMs = 0, limit = 80): Promise<L0QueryRow[]> {
+  async queryL0ForL1(sessionKey: string, after: L0Cursor = 0, limit = 80): Promise<L0QueryRow[]> {
     try {
+      const cursor = normalizeL0Cursor(after);
       const rows = this.db.query(`
         SELECT record_id, session_key, session_id, chat_id, user_id, role, message_text,
           recorded_at, timestamp, metadata_json
         FROM memory_store_l0
-        WHERE session_key = ? AND timestamp > ?
+        WHERE session_key = ?
+          AND (timestamp > ? OR (timestamp = ? AND record_id > ?))
         ORDER BY timestamp ASC, record_id ASC
         LIMIT ?
-      `).all(sessionKey, afterRecordedAtMs, limit) as L0DbRow[];
+      `).all(sessionKey, cursor.timestamp, cursor.timestamp, cursor.recordId, limit) as L0DbRow[];
 
       return rows.map(mapL0Row);
     } catch {
@@ -892,8 +909,8 @@ export class SqliteMemoryStore implements IMemoryStore {
     }
   }
 
-  async queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs = 0, limit = 80): Promise<L0SessionGroup[]> {
-    const rows = await this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
+  async queryL0GroupedBySessionId(sessionKey: string, after: L0Cursor = 0, limit = 80): Promise<L0SessionGroup[]> {
+    const rows = await this.queryL0ForL1(sessionKey, after, limit);
     const groups = new Map<string, L0QueryRow[]>();
     for (const row of rows) {
       const existing = groups.get(row.sessionId);
