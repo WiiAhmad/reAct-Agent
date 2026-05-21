@@ -169,6 +169,80 @@ test("defaults one-shot jobs to a single successful run", () => {
   expect(service.recordSuccessfulRun(job.id)).toEqual({ deleted: true, job: null, runCount: 1 });
 });
 
+test("interval jobs created directly through the service default to unlimited runs", () => {
+  const { service } = makeService();
+  const job = service.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Recurring follow-up",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+  });
+
+  expect(job.maxRuns).toBeNull();
+  expect(service.recordSuccessfulRun(job.id)).toEqual({
+    deleted: false,
+    job: expect.objectContaining({ id: job.id, runCount: 1, maxRuns: null }),
+    runCount: 1,
+  });
+});
+
+test("switching a one-shot job back to interval clears the stale one-run cap", () => {
+  const { service } = makeService();
+  const runAtUnix = Math.floor(Date.UTC(2026, 4, 18, 6, 30, 0) / 1000);
+  const job = service.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Reminder follow-up",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+  });
+
+  service.updateSchedule(job.id, { scheduleMode: "once", runAtUnix });
+  const updated = service.updateSchedule(job.id, { scheduleMode: "interval", intervalSec: 600 });
+
+  expect(updated.maxRuns).toBeNull();
+  expect(service.recordSuccessfulRun(job.id)).toEqual({
+    deleted: false,
+    job: expect.objectContaining({ id: job.id, runCount: 1, maxRuns: null }),
+    runCount: 1,
+  });
+});
+
+test("switching a capped recurring job to another recurring schedule preserves its explicit cap", () => {
+  const { service } = makeService();
+  const job = service.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Reminder follow-up",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+    maxRuns: 3,
+  });
+
+  const updated = service.updateSchedule(job.id, { scheduleMode: "cron", cronExpr: "*/10 * * * *" });
+
+  expect(updated.maxRuns).toBe(3);
+  expect(service.recordSuccessfulRun(job.id)).toEqual({
+    deleted: false,
+    job: expect.objectContaining({ id: job.id, runCount: 1, maxRuns: 3 }),
+    runCount: 1,
+  });
+});
+
+test("switching a recurring job capped at one run to another recurring schedule preserves that explicit cap", () => {
+  const { service } = makeService();
+  const job = service.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Reminder follow-up",
+    schedule: { scheduleMode: "interval", intervalSec: 600 },
+    maxRuns: 1,
+  });
+
+  const updated = service.updateSchedule(job.id, { scheduleMode: "cron", cronExpr: "*/10 * * * *" });
+
+  expect(updated.maxRuns).toBe(1);
+  expect(service.recordSuccessfulRun(job.id)).toEqual({ deleted: true, job: null, runCount: 1 });
+});
+
 test("lists one-shot jobs only when run_at_unix is due", () => {
   const { service } = makeService();
   const runAtUnix = Math.floor(Date.UTC(2026, 4, 18, 6, 30, 0) / 1000);

@@ -28,7 +28,8 @@ test("shared system prompt uses sectioned runtime guidance", () => {
   expect(prompt).toContain("Memory Update");
   expect(prompt).toContain("tdai_current_datetime");
   expect(prompt).toContain("tdai_create_job");
-  expect(prompt).toContain("max_runs defaults to 1");
+  expect(prompt).toContain("One-shot tdai_create_job jobs default max_runs to 1.");
+  expect(prompt).toContain("Interval and cron tdai_create_job jobs are unlimited unless max_runs is set explicitly.");
   expect(prompt).toContain("send fixed text first, then run the agent prompt");
   expect(prompt).toContain("canonical chat JSONL");
   expect(prompt).toContain("L1.5");

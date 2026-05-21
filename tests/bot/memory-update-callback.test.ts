@@ -84,12 +84,16 @@ function createMemoryUpdateDeps() {
           await options?.onProgress?.({ source: "telegram", userId, stage: "l1", status: "complete", createdAtoms: result.l1Created });
           return result;
         },
+        memoryStatus: async () => "status",
+        recall: async () => ({ persona: "Persona", atoms: [], scenarios: [], conversations: [], taskCanvas: null, taskCanvases: [] }),
+        countGeneratedSkills: async () => 3,
       },
       memoryUpdateSettings: {
         getOrCreate: (userId: string) => ({
           ...currentSetting,
           userId,
         }),
+        renderSummary: () => "summary",
         updateSchedule: (userId: string, schedule: { scheduleMode: "interval" | "cron"; intervalSec?: number; cronExpr?: string }) => {
           currentSetting = {
             ...currentSetting,
@@ -252,6 +256,35 @@ async function pressMemoryUpdateRunNow(bot: ReturnType<typeof createTelegramBot>
     },
   } as any);
 }
+
+async function pressMemoryUpdateBack(bot: ReturnType<typeof createTelegramBot>) {
+  await bot.handleUpdate({
+    update_id: 5,
+    callback_query: {
+      id: "callback-back",
+      from: { id: 42, is_bot: false, first_name: "User" },
+      message: { message_id: 10, date: 1, chat: { id: 99, type: "private" } },
+      chat_instance: "chat-instance",
+      data: memoryUpdateCallbacks.back,
+    },
+  } as any);
+}
+
+test("memory update back rebuilds the summary with the generated draft count", async () => {
+  const { bot, apiCalls } = createBotHarness();
+
+  await enterMemoryUpdateConversation(bot);
+  await pressMemoryUpdateBack(bot);
+
+  expect(apiCalls).toContainEqual({
+    method: "editMessageText",
+    payload: expect.objectContaining({
+      chat_id: 99,
+      message_id: 10,
+      text: expect.stringContaining("Generated drafts: 3"),
+    }),
+  });
+});
 
 async function pressMemoryUpdateChangeSchedule(bot: ReturnType<typeof createTelegramBot>) {
   return bot.handleUpdate({

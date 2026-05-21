@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { config } from "../../src/config";
 import {
   describeSchedule,
   normalizeSchedule,
@@ -19,6 +20,27 @@ test("cron schedules compute the next run time from the current timestamp", () =
   const anchorUnix = Math.floor(Date.UTC(2026, 0, 1, 12, 7, 0) / 1000);
 
   expect(getNextDueAtUnix(schedule, anchorUnix)).toBe(Math.floor(Date.UTC(2026, 0, 1, 12, 15, 0) / 1000));
+});
+
+test("cron schedules compute the next run time in APP_TIMEZONE", () => {
+  const previousTimezone = config.app.timezone;
+  const anchorUnix = Math.floor(Date.UTC(2026, 0, 1, 1, 30, 0) / 1000);
+
+  try {
+    config.app.timezone = "Asia/Jakarta";
+    const jakartaSchedule = normalizeSchedule({ scheduleMode: "cron", cronExpr: "0 9 * * *" });
+    const jakartaNextRun = getNextDueAtUnix(jakartaSchedule, anchorUnix);
+
+    config.app.timezone = "UTC";
+    const utcSchedule = normalizeSchedule({ scheduleMode: "cron", cronExpr: "0 9 * * *" });
+    const utcNextRun = getNextDueAtUnix(utcSchedule, anchorUnix);
+
+    expect(jakartaNextRun).toBe(Math.floor(Date.UTC(2026, 0, 1, 2, 0, 0) / 1000));
+    expect(utcNextRun).toBe(Math.floor(Date.UTC(2026, 0, 1, 9, 0, 0) / 1000));
+    expect(jakartaNextRun).not.toBe(utcNextRun);
+  } finally {
+    config.app.timezone = previousTimezone;
+  }
 });
 
 test("validateCronExpression rejects invalid expressions", () => {

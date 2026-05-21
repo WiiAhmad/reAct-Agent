@@ -1,4 +1,5 @@
 import { CronExpressionParser } from "cron-parser";
+import { config } from "../config";
 import { unixNow } from "../utils/time";
 
 export type ScheduleMode = "once" | "interval" | "cron";
@@ -54,7 +55,7 @@ export function validateCronExpression(cronExpr: string): string {
   }
 
   try {
-    CronExpressionParser.parse(normalized);
+    CronExpressionParser.parse(normalized, { tz: config.app.timezone });
   } catch (error) {
     throw new Error(`Invalid cron expression: ${normalized}`);
   }
@@ -108,7 +109,10 @@ export function getNextDueAtUnix(schedule: Schedule, anchorUnix: ScheduleAnchor 
   }
 
   const currentDate = new Date(nowUnix * 1000);
-  const parsed = CronExpressionParser.parse(schedule.cronExpr ?? "", { currentDate });
+  const parsed = CronExpressionParser.parse(schedule.cronExpr ?? "", {
+    currentDate,
+    tz: config.app.timezone,
+  });
   const next = parsed.next() as { toDate?: () => Date; getTime?: () => number };
   const nextDate = typeof next.toDate === "function" ? next.toDate() : new Date(next.getTime?.() ?? currentDate.getTime());
   return Math.floor(nextDate.getTime() / 1000);

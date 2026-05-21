@@ -5,87 +5,112 @@
 Verified against the current working tree on 2026-05-21.
 
 Reviewed 14 previously documented bugs:
-- 9 still appear open in the current tree
-- 5 appear fixed in the current tree
+- 2 still appear open in the current tree
+- 12 appear fixed in the current tree
 
 Unless noted otherwise, the findings below are based on current control-flow inspection and targeted test evidence.
 
 ## Executive summary
 
-The Phase 1 shared-chat trust-boundary issues are now fixed in the current tree:
-- shared-chat Memory entrypoints are private-only,
-- shared-chat autonomous job screens and detail flows are actor-scoped,
-- active task-canvas recall is user-scoped in shared chats,
-- `telegram_send_message` is constrained to the active chat.
+Phase 1 and Phase 2 bugs are now fixed in the current tree.
 
-The highest-priority remaining issues are now:
-- completion-turn task ownership for tool evidence, and
-- scheduler correctness across recurring job defaults, schedule edits, completion timestamps, and timezone handling.
+The remaining open issues are now limited to consistency/integrity bugs:
+- generated skill drafts can still overwrite each other while the stored draft count increases,
+- store-backed maintenance can still skip rows that share the same millisecond timestamp.
+
+Task ownership and scheduler correctness are now aligned with the intended semantics:
+- completion-turn tool evidence stays attached to the completed task,
+- Memory Update back navigation preserves the generated draft count,
+- recurring jobs created through `tdai_create_job` are unlimited unless `max_runs` is explicit,
+- schedule edits clear stale one-shot caps,
+- one-shot hybrid retries do not resend already-delivered fixed reminder text,
+- `last_finished_at` reflects the true finish time,
+- cron schedules honor `APP_TIMEZONE`.
 
 ## Bug entries
 
 ### 1. Completion-turn tool evidence loses task ownership
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** Tool output produced while the user is completing a task can be stored outside that task, so final verification evidence may not stay attached to the completed task.
+**Impact:** Tool output produced while the user completes a task now stays attached to that task, so final verification evidence is not orphaned outside the completed task.
 
-**Root cause:** `judgeTaskTurn()` preserves the completion `taskId`, but the final return value still gates `taskId` on `judgment.isLongTask`. `runReactAgent()` then forwards the dropped `taskId` into tool-result offload.
+**Root cause:** `judgeTaskTurn()` used to preserve the completion task id internally but dropped it in the returned `taskId` and task-boundary write unless `judgment.isLongTask` was true.
 
-**Relevant code:** `src/memory/core/service.ts:566`, `src/memory/core/service.ts:594`, `src/memory/core/service.ts:602`, `src/agent/react-agent.ts:223`
+**Fix summary:** Completion and continuation turns that are attached to an existing task are now treated as task-scoped for both the returned `taskId` and the inserted task boundary.
+
+**Changed code:** `src/memory/core/service.ts`
+
+**Verification:** `tests/memory/task-routing.test.ts`
 
 ---
 
 ### 2. Returning from Memory Update resets the displayed Skill Draft count to 0
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Low
 
-**Impact:** The Memory summary can show `Generated drafts: 0` after returning from Memory Update even when drafts exist.
+**Impact:** The Memory summary now preserves the real generated-skill draft count when the user returns from Memory Update.
 
-**Root cause:** the Memory Update back path rebuilds the summary without `generatedSkillCount`, and the renderer defaults the missing value to `0`.
+**Root cause:** the Memory Update back path rebuilt the summary without `generatedSkillCount`, so the renderer fell back to `0`.
 
-**Relevant code:** `src/bot/bot.ts:106`, `src/bot/conversations/memory-update.ts:158`, `src/bot/ui/renderers.ts:53`
+**Fix summary:** the back-navigation path now fetches and passes `generatedSkillCount` before rebuilding the summary.
+
+**Changed code:** `src/bot/conversations/memory-update.ts`
+
+**Verification:** `tests/bot/memory-update-callback.test.ts`
 
 ---
 
 ### 3. `tdai_create_job` silently turns recurring schedules into single-run jobs by default
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** Interval and cron jobs created through the tool run once unless the caller explicitly knows to provide `max_runs`.
+**Impact:** Interval and cron jobs created through the tool are now unlimited unless the caller explicitly sets `max_runs`.
 
-**Root cause:** the tool schema and parser default `max_runs` to `1`, overriding the safer recurring behavior the service would otherwise use.
+**Root cause:** the tool contract and parser previously hard-defaulted `max_runs` to `1` for every schedule mode.
 
-**Relevant code:** `src/tools/local.ts:168`, `src/tools/local.ts:185`, `src/tools/local.ts:200`, `src/tools/local.ts:227`
+**Fix summary:** the tool now defaults `max_runs` to `1` only for one-shot jobs and reports `max_runs=unlimited` for recurring schedules unless an explicit cap is supplied.
+
+**Changed code:** `src/tools/local.ts`, `src/agent/prompts/system.ts`
+
+**Verification:** `tests/memory/tools.test.ts`, `tests/runtime/agent-prompt.test.ts`
 
 ---
 
 ### 4. Switching a one-shot job back to interval or cron keeps the old one-run cap
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** A job can look recurring again after schedule edits but still self-delete after the next successful run.
+**Impact:** Jobs switched from `once` back to `interval` or `cron` no longer self-delete after the next successful run unless the caller explicitly reapplies a run cap.
 
-**Root cause:** switching to `once` sets `max_runs = COALESCE(max_runs, 1)`, but switching back to `interval` or `cron` does not clear that value.
+**Root cause:** recurring schedule edits reused the existing row and left the old one-shot `max_runs = 1` value in place.
 
-**Relevant code:** `src/services/autonomous-jobs.ts:226`, `src/services/autonomous-jobs.ts:232`, `src/services/autonomous-jobs.ts:258`, `src/bot/conversations/job-detail.ts:212`
+**Fix summary:** recurring schedule edits now clear stale one-shot caps before saving the new schedule mode.
+
+**Changed code:** `src/services/autonomous-jobs.ts`
+
+**Verification:** `tests/services/autonomous-jobs.test.ts`
 
 ---
 
 ### 5. Autonomous jobs stamp `last_finished_at` before the run actually finishes
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** Recurrence timing drifts early by the runtime of the job, so longer jobs can be rescheduled too soon.
+**Impact:** Recurrence timing and job telemetry now anchor to the real finish time instead of a timestamp captured at run start.
 
-**Root cause:** `finishedAt` is captured at the beginning of `runOneAutonomousJob()` and reused later in both the success and error paths.
+**Root cause:** `runOneAutonomousJob()` captured `finishedAt` before any Telegram sends or agent work started and reused that early value in both success and error paths.
 
-**Relevant code:** `src/cron/autonomous.ts:145`, `src/cron/autonomous.ts:189`, `src/cron/autonomous.ts:203`
+**Fix summary:** finish timestamps are now captured at the point the run actually completes or errors.
+
+**Changed code:** `src/cron/autonomous.ts`
+
+**Verification:** `tests/cron/autonomous-helpers.test.ts`
 
 ---
 
@@ -185,27 +210,35 @@ The highest-priority remaining issues are now:
 
 ### 12. Cron schedules are evaluated in host time, not `APP_TIMEZONE`
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** Cron reminders can fire at the wrong wall-clock time whenever the host timezone differs from the configured app timezone.
+**Impact:** Cron-based reminders now use the configured application timezone instead of the host machine timezone.
 
-**Root cause:** the app timezone is configured centrally, but cron parsing calculates next run times without passing a timezone option.
+**Root cause:** cron parsing validated and computed next-run times without passing `config.app.timezone`.
 
-**Relevant code:** `src/config.ts:49`, `src/services/schedules.ts:110`
+**Fix summary:** cron validation and next-run calculation now both use `APP_TIMEZONE`.
+
+**Changed code:** `src/services/schedules.ts`
+
+**Verification:** `tests/services/schedules.test.ts`
 
 ---
 
 ### 13. Hybrid one-shot jobs can resend the fixed reminder text after a partial send failure
 
-**Status:** Open  
+**Status:** Fixed in current tree  
 **Severity:** Medium
 
-**Impact:** If fixed reminder text is partially delivered and the run later errors, the one-shot job stays due and can resend the already-delivered reminder text on the next scheduler tick.
+**Impact:** If a one-shot hybrid job delivers its fixed reminder text and later fails while sending the follow-up response, the retry path no longer sends the same fixed reminder text again.
 
-**Root cause:** message chunks are sent before agent output; failures move the run into the error path without incrementing `runCount`, so the one-shot job remains eligible for another due pass.
+**Root cause:** the runtime had no persisted notion that the one-shot fixed text had already been delivered, so retries replayed the full hybrid send path.
 
-**Relevant code:** `src/cron/autonomous.ts:81`, `src/cron/autonomous.ts:168`, `src/cron/autonomous.ts:189`, `src/cron/autonomous.ts:203`, `src/services/autonomous-jobs.ts:285`, `src/services/autonomous-jobs.ts:295`
+**Fix summary:** one-shot hybrid jobs now persist fixed-text delivery state and skip resending the fixed text on the retry path while continuing the unfinished follow-up work.
+
+**Changed code:** `src/db/schema.ts`, `src/services/autonomous-jobs.ts`, `src/cron/autonomous.ts`
+
+**Verification:** `tests/cron/autonomous-helpers.test.ts`
 
 ## Bug entries (continued)
 
@@ -222,7 +255,5 @@ The highest-priority remaining issues are now:
 
 ## Suggested fix order
 
-1. completion-turn task ownership for tool evidence
-2. recurring job semantics (`max_runs`, schedule edits, `last_finished_at`, timezone)
-3. generated-skill and store-checkpoint consistency bugs
-4. Memory summary draft-count UI bug
+1. generated-skill draft path collisions
+2. store-backed same-timestamp checkpoint skipping

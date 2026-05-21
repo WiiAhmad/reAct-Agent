@@ -56,6 +56,7 @@ export function migrate(db: Database) {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_run_at INTEGER,
       last_finished_at INTEGER,
+      fixed_text_sent_at INTEGER,
       last_status TEXT,
       last_error TEXT,
       created_at TEXT NOT NULL,
@@ -183,6 +184,9 @@ export function migrate(db: Database) {
   }
   if (!hasColumn(db, "autonomous_jobs", "last_finished_at")) {
     db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN last_finished_at INTEGER`);
+  }
+  if (!hasColumn(db, "autonomous_jobs", "fixed_text_sent_at")) {
+    db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN fixed_text_sent_at INTEGER`);
   }
   if (!hasColumn(db, "autonomous_jobs", "last_status")) {
     db.exec(`ALTER TABLE autonomous_jobs ADD COLUMN last_status TEXT`);

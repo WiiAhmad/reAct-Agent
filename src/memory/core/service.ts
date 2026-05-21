@@ -591,15 +591,17 @@ export class MemoryService {
       newTaskLabel: judgment.newTaskLabel,
       source: judgment.source,
     });
+    const taskScopedTurn = Boolean(taskId && (judgment.isLongTask || judgment.isContinuation || judgment.taskCompleted));
+
     await backend.insertTaskBoundary({
       chatId: input.chatId,
       userId: input.userId,
       startNodeSequence: 0,
-      result: judgment.isLongTask && taskId ? "long" : "short",
-      taskId: judgment.isLongTask && taskId ? taskId : undefined,
+      result: taskScopedTurn ? "long" : "short",
+      taskId: taskScopedTurn ? taskId : undefined,
     });
 
-    return { judgment, taskId: judgment.isLongTask ? taskId : undefined };
+    return { judgment, taskId: taskScopedTurn ? taskId : undefined };
   }
 
   async offloadToolResult(input: { chatId: string; userId: string; taskId?: number; toolCallId?: string; toolName: string; args: EventMeta; rawResult: string }): Promise<OffloadToolResult> {

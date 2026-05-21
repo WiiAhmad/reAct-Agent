@@ -30,6 +30,7 @@ test("mapAutonomousJobRow converts snake_case database rows to camelCase rows", 
     max_runs: null,
     last_run_at: 1715944800,
     last_finished_at: 1715948400,
+    fixed_text_sent_at: null,
     last_status: "success",
     last_error: null,
     created_at: "2026-05-17T11:00:00.000Z",
@@ -53,6 +54,7 @@ test("mapAutonomousJobRow converts snake_case database rows to camelCase rows", 
     maxRuns: null,
     lastRunAt: 1715944800,
     lastFinishedAt: 1715948400,
+    fixedTextSentAt: null,
     lastStatus: "success",
     lastError: null,
     createdAt: "2026-05-17T11:00:00.000Z",
@@ -293,6 +295,117 @@ test("runOneAutonomousJob does not count or delete hybrid jobs when fixed text f
   expect(agentInputs).toEqual([]);
   expect(refreshed?.lastStatus).toBe("error");
   expect(refreshed?.runCount).toBe(0);
+});
+
+test("runOneAutonomousJob retries one-shot hybrid jobs without resending fixed text after delivery", async () => {
+  const db = makeDb();
+  const jobs = new AutonomousJobService(db);
+  const runAtUnix = Math.floor(Date.UTC(2026, 4, 18, 6, 30, 0) / 1000);
+  const job = jobs.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Kirim tindak lanjut singkat.",
+    jobType: "hybrid",
+    messageText: "Pengingat: minum air",
+    agentPrompt: "Kirim tindak lanjut singkat.",
+    schedule: { scheduleMode: "once", runAtUnix },
+    maxRuns: 1,
+  });
+
+  const firstAttemptSent: string[] = [];
+  await expect(runOneAutonomousJob({
+    db,
+    bot: {
+      api: {
+        sendMessage: async (_chatId: string, text: string) => {
+          if (text.includes("Agent follow-up")) throw new Error("telegram down");
+          firstAttemptSent.push(text);
+        },
+      },
+    } as any,
+    memory: {} as any,
+    registry: {} as any,
+    llm: {} as any,
+    job,
+    runAgent: async () => "Agent follow-up",
+    nowUnix: runAtUnix,
+    finishedUnix: runAtUnix + 30,
+  })).rejects.toThrow("Failed to send autonomous job #1");
+
+  const afterFailure = jobs.getJobById(job.id);
+  expect(firstAttemptSent).toEqual([
+    "Pengingat: minum air",
+    expect.stringContaining("Autonomous job #1 failed"),
+  ]);
+  expect(afterFailure?.fixedTextSentAt).not.toBeNull();
+
+  const retrySent: string[] = [];
+  await runOneAutonomousJob({
+    db,
+    bot: {
+      api: {
+        sendMessage: async (_chatId: string, text: string) => {
+          retrySent.push(text);
+        },
+      },
+    } as any,
+    memory: {} as any,
+    registry: {} as any,
+    llm: {} as any,
+    job: afterFailure!,
+    runAgent: async () => "Agent follow-up",
+    nowUnix: runAtUnix + 60,
+    finishedUnix: runAtUnix + 90,
+  });
+
+  expect(retrySent).toEqual([
+    expect.stringContaining("Agent follow-up"),
+  ]);
+  expect(retrySent).not.toContain("Pengingat: minum air");
+  expect(jobs.getJobById(job.id)).toBeNull();
+});
+
+test("runOneAutonomousJob stamps last_finished_at from the actual finish time when finishedUnix is omitted", async () => {
+  const db = makeDb();
+  const jobs = new AutonomousJobService(db);
+  const job = jobs.createJob({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Check in with the team",
+    schedule: { scheduleMode: "interval", intervalSec: 3600 },
+  });
+
+  const RealDate = Date;
+  let currentMs = Date.UTC(2026, 4, 17, 11, 25, 0);
+  class FakeDate extends RealDate {
+    constructor(value?: string | number | Date) {
+      super(value ?? currentMs);
+    }
+    static now() {
+      return currentMs;
+    }
+  }
+  (globalThis as { Date: DateConstructor }).Date = FakeDate as unknown as DateConstructor;
+
+  try {
+    await runOneAutonomousJob({
+      db,
+      bot: { api: { sendMessage: async () => ({}) } } as any,
+      memory: {} as any,
+      registry: {} as any,
+      llm: {} as any,
+      job,
+      runAgent: async () => {
+        currentMs = Date.UTC(2026, 4, 17, 11, 27, 0);
+        return "Autonomous answer";
+      },
+      nowUnix: Math.floor(Date.UTC(2026, 4, 17, 11, 25, 0) / 1000),
+    });
+  } finally {
+    (globalThis as { Date: DateConstructor }).Date = RealDate;
+  }
+
+  expect(jobs.getJobById(job.id)?.lastFinishedAt).toBe(Math.floor(Date.UTC(2026, 4, 17, 11, 27, 0) / 1000));
 });
 
 test("runOneMemoryUpdateNow emits one llm request summary for maintenance provider work", async () => {

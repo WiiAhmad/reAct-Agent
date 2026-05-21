@@ -21,6 +21,7 @@ export type AutonomousJobRow = {
   cronExpr: string | null;
   lastRunAt: number | null;
   lastFinishedAt: number | null;
+  fixedTextSentAt: number | null;
   lastStatus: string | null;
   lastError: string | null;
   createdAt: string;
@@ -45,6 +46,7 @@ type AutonomousJobDbRow = {
   cron_expr: string | null;
   last_run_at: number | null;
   last_finished_at: number | null;
+  fixed_text_sent_at: number | null;
   last_status: string | null;
   last_error: string | null;
   created_at: string;
@@ -79,6 +81,7 @@ const AUTONOMOUS_JOB_COLUMNS = `
           cron_expr,
           last_run_at,
           last_finished_at,
+          fixed_text_sent_at,
           last_status,
           last_error,
           created_at,
@@ -117,6 +120,7 @@ function mapRow(row: AutonomousJobDbRow): AutonomousJobRow {
     cronExpr: schedule.cronExpr,
     lastRunAt: row.last_run_at,
     lastFinishedAt: row.last_finished_at,
+    fixedTextSentAt: row.fixed_text_sent_at,
     lastStatus: row.last_status,
     lastError: row.last_error,
     createdAt: row.created_at,
@@ -150,11 +154,12 @@ export class AutonomousJobService {
           enabled,
           last_run_at,
           last_finished_at,
+          fixed_text_sent_at,
           last_status,
           last_error,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
       )
       .run(
         input.chatId,
@@ -249,15 +254,19 @@ export class AutonomousJobService {
   }
 
   updateSchedule(id: number, scheduleInput: ScheduleInput): AutonomousJobRow {
+    const current = this.getJobById(id);
+    if (!current) throw new Error(`Autonomous job not found: ${id}`);
+
     const schedule = normalizeSchedule(scheduleInput);
     if (schedule.scheduleMode === "once") {
       this.db
-        .query(`UPDATE autonomous_jobs SET schedule_mode = ?, run_at_unix = ?, interval_sec = ?, cron_expr = ?, max_runs = COALESCE(max_runs, 1), updated_at = ? WHERE id = ?`)
+        .query(`UPDATE autonomous_jobs SET schedule_mode = ?, run_at_unix = ?, interval_sec = ?, cron_expr = ?, max_runs = COALESCE(max_runs, 1), fixed_text_sent_at = NULL, updated_at = ? WHERE id = ?`)
         .run(schedule.scheduleMode, schedule.runAtUnix, schedule.intervalSec, schedule.cronExpr, nowIso(), id);
     } else {
+      const nextMaxRuns = current.scheduleMode === "once" && current.maxRuns === 1 ? null : current.maxRuns;
       this.db
-        .query(`UPDATE autonomous_jobs SET schedule_mode = ?, run_at_unix = ?, interval_sec = ?, cron_expr = ?, updated_at = ? WHERE id = ?`)
-        .run(schedule.scheduleMode, schedule.runAtUnix, schedule.intervalSec, schedule.cronExpr, nowIso(), id);
+        .query(`UPDATE autonomous_jobs SET schedule_mode = ?, run_at_unix = ?, interval_sec = ?, cron_expr = ?, max_runs = ?, fixed_text_sent_at = NULL, updated_at = ? WHERE id = ?`)
+        .run(schedule.scheduleMode, schedule.runAtUnix, schedule.intervalSec, schedule.cronExpr, nextMaxRuns, nowIso(), id);
     }
     const job = this.getJobById(id);
     if (!job) throw new Error(`Autonomous job not found: ${id}`);
@@ -331,6 +340,24 @@ export class AutonomousJobService {
     this.db
       .query(`UPDATE autonomous_jobs SET last_run_at = ?, last_status = ?, last_error = NULL, updated_at = ? WHERE id = ?`)
       .run(nowUnix, "running", nowIso(), id);
+    const job = this.getJobById(id);
+    if (!job) throw new Error(`Autonomous job not found: ${id}`);
+    return job;
+  }
+
+  markFixedTextSent(id: number, nowUnix: number): AutonomousJobRow {
+    this.db
+      .query(`UPDATE autonomous_jobs SET fixed_text_sent_at = ?, updated_at = ? WHERE id = ?`)
+      .run(nowUnix, nowIso(), id);
+    const job = this.getJobById(id);
+    if (!job) throw new Error(`Autonomous job not found: ${id}`);
+    return job;
+  }
+
+  clearFixedTextSent(id: number): AutonomousJobRow {
+    this.db
+      .query(`UPDATE autonomous_jobs SET fixed_text_sent_at = NULL, updated_at = ? WHERE id = ?`)
+      .run(nowIso(), id);
     const job = this.getJobById(id);
     if (!job) throw new Error(`Autonomous job not found: ${id}`);
     return job;

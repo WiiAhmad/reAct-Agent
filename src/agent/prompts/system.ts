@@ -37,7 +37,8 @@ Tool-use rules:
 - Use tdai_create_job for reminders and scheduled tasks.
 - For relative times, call tdai_current_datetime first, compute an ISO run_at, then create the job.
 - tdai_create_job jobs send fixed text first, then run the agent prompt when due.
-- max_runs defaults to 1. Only set a larger max_runs when the user explicitly asks for repeated runs such as "3 times".
+- One-shot tdai_create_job jobs default max_runs to 1.
+- Interval and cron tdai_create_job jobs are unlimited unless max_runs is set explicitly.
 
 Response style:
 - Do not reveal hidden chain-of-thought.

@@ -165,7 +165,7 @@ export function createLocalTools(memory: MemoryService, telegram?: Api, autonomo
     {
       name: "tdai_create_job",
       source: "local",
-      description: "Create a hybrid scheduled Telegram job that sends fixed text first, then runs an agent prompt. Supports one-shot, interval, and cron schedules. Defaults max_runs to 1.",
+      description: "Create a hybrid scheduled Telegram job that sends fixed text first, then runs an agent prompt. One-shot jobs default max_runs to 1; interval and cron jobs are unlimited unless max_runs is provided.",
       inputSchema: {
         type: "object",
         properties: {
@@ -182,7 +182,7 @@ export function createLocalTools(memory: MemoryService, telegram?: Api, autonomo
             required: ["mode"],
             additionalProperties: false,
           },
-          max_runs: { type: "number", description: "Positive maximum execution count. Defaults to 1." },
+          max_runs: { type: "number", description: "Optional positive maximum execution count. One-shot defaults to 1; recurring schedules default to unlimited." },
         },
         required: ["message_text", "agent_prompt", "schedule"],
         additionalProperties: false,
@@ -196,9 +196,6 @@ export function createLocalTools(memory: MemoryService, telegram?: Api, autonomo
 
         const agentPrompt = asString(args.agent_prompt).trim();
         if (!agentPrompt) return "agent_prompt is required.";
-
-        const maxRuns = asPositiveInteger(args.max_runs, 1, "max_runs");
-        if (typeof maxRuns === "string") return maxRuns;
 
         const scheduleInput = asObject(args.schedule);
         const mode = asString(scheduleInput.mode).trim();
@@ -224,6 +221,10 @@ export function createLocalTools(memory: MemoryService, telegram?: Api, autonomo
           return "schedule.mode must be one of: once, interval, cron.";
         }
 
+        const explicitMaxRuns = args.max_runs === undefined ? null : asPositiveInteger(args.max_runs, 0, "max_runs");
+        if (typeof explicitMaxRuns === "string") return explicitMaxRuns;
+        const maxRuns = explicitMaxRuns ?? (schedule.scheduleMode === "once" ? 1 : null);
+
         const job = jobs.createJob({
           chatId: ctx.chatId,
           userId: ctx.userId,
@@ -235,7 +236,7 @@ export function createLocalTools(memory: MemoryService, telegram?: Api, autonomo
           maxRuns,
         });
 
-        return `Created job #${job.id}. Schedule: ${job.scheduleLabel}. max_runs=${maxRuns}.`;
+        return `Created job #${job.id}. Schedule: ${job.scheduleLabel}. max_runs=${maxRuns ?? "unlimited"}.`;
       },
     },
     {

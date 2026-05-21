@@ -128,7 +128,7 @@ test("memory search tool renders relevant historical task canvases", async () =>
   expect(output).toContain("Token refresh branch fixed");
 });
 
-test("tdai_create_job creates one-shot hybrid jobs with default max_runs", async () => {
+test("tdai_create_job keeps one-shot hybrid jobs at max_runs=1 by default", async () => {
   const memory = createMemoryServiceDouble();
   const autonomousJobs = createAutonomousJobsDouble();
   const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
@@ -162,7 +162,38 @@ test("tdai_create_job creates one-shot hybrid jobs with default max_runs", async
   });
 });
 
-test("tdai_create_job creates interval jobs with caller supplied max_runs", async () => {
+test("tdai_create_job leaves interval jobs unlimited when max_runs is omitted", async () => {
+  const memory = createMemoryServiceDouble();
+  const autonomousJobs = createAutonomousJobsDouble();
+  const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
+  const createJob = tools.find((tool) => tool.name === "tdai_create_job");
+
+  const output = await createJob!.execute(
+    {
+      message_text: "Pengingat: cek deploy",
+      agent_prompt: "Berikan follow-up cek deploy.",
+      schedule: { mode: "interval", interval_sec: 600 },
+    },
+    { chatId: "chat-1", userId: "user-1", memory: memory as any },
+  );
+
+  expect(output).toContain("max_runs=unlimited");
+  expect(autonomousJobs.createJob).toHaveBeenCalledWith({
+    chatId: "chat-1",
+    userId: "user-1",
+    prompt: "Berikan follow-up cek deploy.",
+    jobType: "hybrid",
+    messageText: "Pengingat: cek deploy",
+    agentPrompt: "Berikan follow-up cek deploy.",
+    schedule: {
+      scheduleMode: "interval",
+      intervalSec: 600,
+    },
+    maxRuns: null,
+  });
+});
+
+test("tdai_create_job still accepts an explicit recurring max_runs override", async () => {
   const memory = createMemoryServiceDouble();
   const autonomousJobs = createAutonomousJobsDouble();
   const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
@@ -193,13 +224,13 @@ test("tdai_create_job creates interval jobs with caller supplied max_runs", asyn
   });
 });
 
-test("tdai_create_job creates cron jobs", async () => {
+test("tdai_create_job leaves cron jobs unlimited when max_runs is omitted", async () => {
   const memory = createMemoryServiceDouble();
   const autonomousJobs = createAutonomousJobsDouble();
   const tools = createLocalTools(memory as any, undefined, autonomousJobs as any);
   const createJob = tools.find((tool) => tool.name === "tdai_create_job");
 
-  await createJob!.execute(
+  const output = await createJob!.execute(
     {
       message_text: "Pengingat: cek deploy",
       agent_prompt: "Berikan follow-up cek deploy.",
@@ -208,6 +239,7 @@ test("tdai_create_job creates cron jobs", async () => {
     { chatId: "chat-1", userId: "user-1", memory: memory as any },
   );
 
+  expect(output).toContain("max_runs=unlimited");
   expect(autonomousJobs.createJob).toHaveBeenCalledWith({
     chatId: "chat-1",
     userId: "user-1",
@@ -219,7 +251,7 @@ test("tdai_create_job creates cron jobs", async () => {
       scheduleMode: "cron",
       cronExpr: "*/10 * * * *",
     },
-    maxRuns: 1,
+    maxRuns: null,
   });
 });
 

@@ -166,15 +166,17 @@ export function createMemoryUpdateConversation(deps: MemoryUpdateConversationDep
         case memoryUpdateCallbacks.back: {
           const summary = await conversation.external(async () => {
             const chatId = String(action.chat?.id ?? ctx.chat?.id ?? "");
-            const [memoryStatus, recall, freshSetting] = await Promise.all([
+            const [memoryStatus, recall, generatedSkillCount, freshSetting] = await Promise.all([
               deps.memory.memoryStatus(userId, chatId),
               deps.memory.recall(userId, "project preferences workflow coding", 5, chatId),
+              deps.memory.countGeneratedSkills(userId),
               deps.settings.getOrCreate(userId),
             ]);
             return buildRichMemorySummary({
               memoryStatus,
               recall,
               memoryUpdateSummary: deps.settings.renderSummary(freshSetting),
+              generatedSkillCount,
             });
           });
           await action.editMessageText(renderMemorySummaryScreen(summary), {

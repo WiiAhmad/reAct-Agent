@@ -64,6 +64,7 @@ type AutonomousJobDbRow = {
   max_runs: number | null;
   last_run_at: number | null;
   last_finished_at: number | null;
+  fixed_text_sent_at: number | null;
   last_status: string | null;
   last_error: string | null;
   created_at: string;
@@ -134,6 +135,7 @@ export function mapAutonomousJobRow(row: AutonomousJobDbRow): AutonomousJobRow {
     cronExpr: schedule.cronExpr,
     lastRunAt: row.last_run_at,
     lastFinishedAt: row.last_finished_at,
+    fixedTextSentAt: row.fixed_text_sent_at,
     lastStatus: row.last_status,
     lastError: row.last_error,
     createdAt: row.created_at,
@@ -144,37 +146,44 @@ export function mapAutonomousJobRow(row: AutonomousJobDbRow): AutonomousJobRow {
 
 export async function runOneAutonomousJob(input: AutonomousRunInput) {
   const now = input.nowUnix ?? unixNow();
-  const finishedAt = input.finishedUnix ?? unixNow();
   const jobService = new AutonomousJobService(input.db);
-  jobService.markRunStarted(input.job.id, now);
+  let currentJob = jobService.markRunStarted(input.job.id, now);
   emitTrace(input.trace, {
     minLevel: 1,
     source: "autonomous",
     event: "job.start",
-    chatId: input.job.chatId,
-    userId: input.job.userId,
-    jobId: String(input.job.id),
-    payload: { nowUnix: now, jobType: input.job.jobType, runCount: input.job.runCount },
+    chatId: currentJob.chatId,
+    userId: currentJob.userId,
+    jobId: String(currentJob.id),
+    payload: { nowUnix: now, jobType: currentJob.jobType, runCount: currentJob.runCount },
   });
 
   return runWithLlmRequestContext({
     trace: input.trace,
     requestType: "autonomous_job",
-    chatId: input.job.chatId,
-    userId: input.job.userId,
-    jobId: String(input.job.id),
+    chatId: currentJob.chatId,
+    userId: currentJob.userId,
+    jobId: String(currentJob.id),
   }, async () => {
     try {
-      if (input.job.jobType === "hybrid" && input.job.messageText.trim()) {
-        const sent = await sendTelegramText(input.bot, input.job.chatId, input.job.messageText, `Failed to send hybrid job text #${input.job.id}`);
-        if (!sent) throw new Error(`Failed to send hybrid job text #${input.job.id}`);
+      const shouldSendFixedText =
+        currentJob.jobType === "hybrid" &&
+        currentJob.messageText.trim().length > 0 &&
+        !(currentJob.scheduleMode === "once" && currentJob.fixedTextSentAt != null);
+
+      if (shouldSendFixedText) {
+        const sent = await sendTelegramText(input.bot, currentJob.chatId, currentJob.messageText, `Failed to send hybrid job text #${currentJob.id}`);
+        if (!sent) throw new Error(`Failed to send hybrid job text #${currentJob.id}`);
+        if (currentJob.scheduleMode === "once") {
+          currentJob = jobService.markFixedTextSent(currentJob.id, now);
+        }
       }
 
-      const agentPrompt = input.job.jobType === "hybrid" && input.job.agentPrompt.trim() ? input.job.agentPrompt : input.job.prompt;
+      const agentPrompt = currentJob.jobType === "hybrid" && currentJob.agentPrompt.trim() ? currentJob.agentPrompt : currentJob.prompt;
       const answer = await (input.runAgent ?? runReactAgent)({
-        chatId: input.job.chatId,
-        userId: input.job.userId,
-        input: `[AUTONOMOUS_JOB #${input.job.id}] ${agentPrompt}`,
+        chatId: currentJob.chatId,
+        userId: currentJob.userId,
+        input: `[AUTONOMOUS_JOB #${currentJob.id}] ${agentPrompt}`,
         memory: input.memory,
         registry: input.registry,
         llm: input.llm,
@@ -182,38 +191,40 @@ export async function runOneAutonomousJob(input: AutonomousRunInput) {
         trace: input.trace,
       });
 
-      const text = `🤖 Autonomous job #${input.job.id}\n\n${truncateText(answer, 3500)}`;
-      const sent = await sendTelegramText(input.bot, input.job.chatId, text, `Failed to send autonomous job #${input.job.id}`);
-      if (!sent) throw new Error(`Failed to send autonomous job #${input.job.id}`);
+      const text = `🤖 Autonomous job #${currentJob.id}\n\n${truncateText(answer, 3500)}`;
+      const sent = await sendTelegramText(input.bot, currentJob.chatId, text, `Failed to send autonomous job #${currentJob.id}`);
+      if (!sent) throw new Error(`Failed to send autonomous job #${currentJob.id}`);
 
-      jobService.markRunFinished(input.job.id, finishedAt, "success", null);
-      const completion = jobService.recordSuccessfulRun(input.job.id);
+      const finishedAt = input.finishedUnix ?? unixNow();
+      jobService.markRunFinished(currentJob.id, finishedAt, "success", null);
+      const completion = jobService.recordSuccessfulRun(currentJob.id);
       emitTrace(input.trace, {
         minLevel: 1,
         source: "autonomous",
         event: "job.complete",
-        chatId: input.job.chatId,
-        userId: input.job.userId,
-        jobId: String(input.job.id),
+        chatId: currentJob.chatId,
+        userId: currentJob.userId,
+        jobId: String(currentJob.id),
         payload: { finishedAtUnix: finishedAt, answerLength: answer.length, deleted: completion.deleted, runCount: completion.runCount },
       });
 
       return { job: completion.job, answer, deleted: completion.deleted, runCount: completion.runCount };
     } catch (error) {
+      const finishedAt = input.finishedUnix ?? unixNow();
       const message = toErrorMessage(error);
-      jobService.markRunFinished(input.job.id, finishedAt, "error", message);
+      jobService.markRunFinished(currentJob.id, finishedAt, "error", message);
       emitTrace(input.trace, {
         minLevel: 1,
         source: "autonomous",
         event: "job.error",
-        chatId: input.job.chatId,
-        userId: input.job.userId,
-        jobId: String(input.job.id),
+        chatId: currentJob.chatId,
+        userId: currentJob.userId,
+        jobId: String(currentJob.id),
         payload: { finishedAtUnix: finishedAt },
         error,
       });
-      const failureText = `🤖 Autonomous job #${input.job.id} failed\n\n${truncateText(message, 3500)}`;
-      await sendTelegramText(input.bot, input.job.chatId, failureText, `Failed to send autonomous job failure #${input.job.id}`);
+      const failureText = `🤖 Autonomous job #${currentJob.id} failed\n\n${truncateText(message, 3500)}`;
+      await sendTelegramText(input.bot, currentJob.chatId, failureText, `Failed to send autonomous job failure #${currentJob.id}`);
       throw error;
     }
   });
@@ -288,7 +299,7 @@ export function startAutonomousLoop(deps: AutonomousDeps) {
       const now = unixNow();
       const jobs = deps.db
         .query(`
-          SELECT id, chat_id, user_id, prompt, job_type, message_text, agent_prompt, enabled, schedule_mode, run_at_unix, interval_sec, cron_expr, run_count, max_runs, last_run_at, last_finished_at, last_status, last_error, created_at, updated_at
+          SELECT id, chat_id, user_id, prompt, job_type, message_text, agent_prompt, enabled, schedule_mode, run_at_unix, interval_sec, cron_expr, run_count, max_runs, last_run_at, last_finished_at, fixed_text_sent_at, last_status, last_error, created_at, updated_at
           FROM autonomous_jobs
           WHERE enabled = 1
           ORDER BY id ASC
