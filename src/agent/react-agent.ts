@@ -1,5 +1,6 @@
 import { config } from "../config";
 import type { MemoryService } from "../memory/core/service";
+import { buildRecallPromptSections } from "../memory/recall/context";
 import type { EventMeta } from "../memory/core/types";
 import { truncateText } from "../utils/text";
 import type { ToolRegistry } from "../tools/registry";
@@ -18,43 +19,6 @@ export type RunAgentInput = {
   mode?: "chat" | "autonomous";
   trace?: RuntimeTraceEmitter;
 };
-
-function scenarioBody(scenario: { body_markdown?: string; bodyMarkdown?: string }): string {
-  return scenario.body_markdown ?? scenario.bodyMarkdown ?? "";
-}
-
-function formatRecall(recall: Awaited<ReturnType<MemoryService["recall"]>>): string {
-  const sections: string[] = [];
-  if (recall.persona) sections.push(`## L3 Persona\n${recall.persona}`);
-  if (recall.scenarios.length) {
-    sections.push(
-      `## L2 Scenarios\n${recall.scenarios
-        .map((s) => `### Scenario #${s.id}: ${s.title}\n${truncateText(scenarioBody(s), 1600)}`)
-        .join("\n\n")}`,
-    );
-  }
-  if (recall.atoms.length) {
-    sections.push(`## L1 Memory atoms\n${recall.atoms.map((a) => `- atom_id=${a.id} importance=${a.importance}: ${a.text}`).join("\n")}`);
-  }
-  if (recall.conversations.length) {
-    sections.push(
-      `## L0 Related conversation evidence\n${recall.conversations
-        .map((c) => `- turn_id=${c.id} ${c.created_at} ${c.role}: ${truncateText(c.content, 600)}`)
-        .join("\n")}`,
-    );
-  }
-  if (recall.taskCanvas) {
-    sections.push(`## Active Mermaid task canvas\n\`\`\`mermaid\n${truncateText(recall.taskCanvas, 2200)}\n\`\`\``);
-  }
-  if (recall.taskCanvases.length) {
-    sections.push(
-      `## Relevant historical task canvases\n${recall.taskCanvases
-        .map((task) => `### Task #${task.id}: ${task.label} (${task.status})\nfile_path=${task.filePath}\n\`\`\`mermaid\n${truncateText(task.canvas, 2200)}\n\`\`\``)
-        .join("\n\n")}`,
-    );
-  }
-  return sections.join("\n\n") || "No prior memory found.";
-}
 
 function toolCallSummary(call: ToolCall): string {
   return `${call.name}(${truncateText(JSON.stringify(call.arguments ?? {}), 800)})`;
@@ -135,12 +99,14 @@ export async function runReactAgent(input: RunAgentInput): Promise<string> {
   }, 1);
 
   const system = buildAgentSystemPrompt();
-
-  const memoryContext = `Relevant layered memory snapshot:\n\n${formatRecall(recall)}`;
+  const recallSections = buildRecallPromptSections(recall);
 
   const messages: AgentMessage[] = [
     { role: "system", content: system },
-    { role: "system", content: memoryContext },
+    { role: "system", content: recallSections.stableContext },
+    ...(recallSections.dynamicContext
+      ? [{ role: "user", content: recallSections.dynamicContext } as AgentMessage]
+      : []),
     ...recent
       .filter((m) => m.role === "user" || m.role === "assistant")
       .map((m) => ({ role: m.role, content: m.content }) as AgentMessage),
