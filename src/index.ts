@@ -2,6 +2,7 @@ import { assertRuntimeConfig, config, getRuntimeConfigSummary } from "./config";
 import { db, initDb } from "./db";
 import { createLlmProvider } from "./agent/providers";
 import { createMemoryService } from "./memory/integration/factory";
+import { buildMemoryServiceFactoryConfig } from "./memory/integration/app-config";
 import { ToolRegistry } from "./tools/registry";
 import { createLocalTools } from "./tools/local";
 import { createTelegramBot } from "./bot/bot";
@@ -50,27 +51,12 @@ async function main() {
   }
 
   const llm = createLlmProvider(runtimeTrace);
-  const memory = await createMemoryService(db, llm, {
-    storage: {
-      dataDir: config.storage.dataDir,
-      memoryRefsDir: config.storage.memoryRefsDir,
-      memoryCanvasDir: config.storage.memoryCanvasDir,
-      memoryJsonlExportDir: config.storage.memoryJsonlExportDir,
-      historyDir: config.storage.historyDir,
-      memoryTaskCanvasDir: config.storage.memoryTaskCanvasDir,
-      memoryGeneratedSkillsDir: config.storage.memoryGeneratedSkillsDir,
-    },
-    memory: {
-      maintenanceCron: config.memory.maintenanceCron,
-      offloadEnabled: config.memory.offloadEnabled,
-      offloadMinChars: config.memory.offloadMinChars,
-      offloadSummaryChars: config.memory.offloadSummaryChars,
-      sqliteVecEnabled: config.memory.sqliteVecEnabled,
-      jsonlExportEnabled: config.memory.jsonlExportEnabled,
-      l15: config.memory.l15,
-      l4: config.memory.l4,
-    },
-  }, runtimeTrace);
+  const memory = await createMemoryService(
+    db,
+    llm,
+    buildMemoryServiceFactoryConfig(config),
+    runtimeTrace,
+  );
   const registry = new ToolRegistry(db, runtimeTrace);
   const autonomousJobs = new AutonomousJobService(db);
   const memoryUpdateSettings = new MemoryUpdateSettingsService(db);
